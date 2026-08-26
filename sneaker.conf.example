@@ -1,0 +1,30 @@
+# Copy to sneaker.conf (gitignored) and edit. Sourced as bash.
+
+# The internet-facing staging host. Where the fetcher runs.
+BASTION="you@bastion.example"
+
+# Working directory ON THE STAGING HOST. Single-quoted: the remote shell
+# expands it, not your local one.
+BASTION_WORKDIR='$HOME/airlock/sneaker'
+
+# Local staging area. Bundles land here; nothing here is a vault.
+STAGE_DIR="${HOME}/airlock/obsidian-plugins"
+
+# The Obsidian you actually run, so minAppVersion can be checked. Leave empty
+# to skip the check (you will get plugins that silently fail to load).
+OBSIDIAN_VERSION="1.6.7"
+
+# Named vault targets: a local path, or host:/remote/path.
+# Local paths may be Windows-style; they are converted with wslpath.
+VAULT_ALIAS=(
+  [laptop]="${HOME}/vault-work"
+  [ntfs]="/mnt/c/Users/you/vault-work"
+  [workstation]="workstation.example:/home/you/vault-work"
+)
+
+# Used when --vault is not given.
+DEFAULT_VAULTS=( laptop )
+
+# Uncomment to shrink bundles at the cost of reviewability / offline browsing.
+# FETCH_SOURCE="--no-source"
+# FETCH_CATALOG="--no-catalog"

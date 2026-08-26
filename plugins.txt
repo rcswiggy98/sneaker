@@ -1,0 +1,18 @@
+# sneaker / obsidian-plugins - the pinned input you review.
+#
+# One plugin per line as owner/repo. This is deliberately NOT a list of plugin
+# ids resolved through the community index: a plugin changing hands silently
+# remaps an id, but it cannot silently remap a line in this file.
+#
+# Append @tag to freeze a specific release:
+#     blacksmithgu/obsidian-dataview@0.5.70
+#
+# Review each repo on GitHub before adding it. main.js is minified bundled
+# JavaScript running with full Electron/Node privileges once it lands;
+# nothing downstream of this file can tell you what it does.
+
+blacksmithgu/obsidian-dataview
+SilentVoid13/Templater
+Vinzent03/obsidian-git
+obsidian-tasks-group/obsidian-tasks
+tgrosinger/advanced-tables-obsidian

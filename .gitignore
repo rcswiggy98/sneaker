@@ -1,0 +1,6 @@
+sneaker.conf
+*.pyc
+__pycache__/
+# Bundles and unpacked payloads are build output, never version control.
+*.tar.gz
+/stage/

@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+#
+# sneaker - human-gated staging of internet artifacts into an isolated network.
+#
+# This tool never crosses a boundary on its own. The fetch half runs on the
+# staging host and knows nothing about the receiving side; stage and install
+# contain no network code. Every crossing is an act you perform: you
+# authenticate, the bundle is carried over that session, you approve the plan.
+
+set -uo pipefail
+
+_self=${BASH_SOURCE[0]}
+while [ -L "$_self" ]; do
+  _dir=$(cd -P "$(dirname "$_self")" && pwd)
+  _self=$(readlink "$_self")
+  case "$_self" in /*) : ;; *) _self="${_dir}/${_self}" ;; esac
+done
+SNEAKER_ROOT=$(cd -P "$(dirname "$_self")/.." && pwd)
+SNEAKER_LIB="${SNEAKER_ROOT}/lib"
+
+# shellcheck source=lib/common.sh
+. "${SNEAKER_LIB}/common.sh"
+# shellcheck source=lib/fsprobe.sh
+. "${SNEAKER_LIB}/fsprobe.sh"
+
+# ------------------------------------------------------------------- defaults
+BASTION=""
+# Single-quoted on purpose: this string is expanded by the REMOTE shell.
+BASTION_WORKDIR='$HOME/airlock/sneaker'
+STAGE_DIR="${HOME}/airlock/obsidian-plugins"
+PLUGINS_FILE="${SNEAKER_ROOT}/plugins.txt"
+LOCK_FILE="${SNEAKER_ROOT}/plugins.lock"
+OBSIDIAN_VERSION=""
+FETCH_SOURCE=""     # set to --no-source to omit tagged source archives
+FETCH_CATALOG=""    # set to --no-catalog to omit the community plugin index
+declare -A VAULT_ALIAS=()
+declare -a DEFAULT_VAULTS=()
+
+# ------------------------------------------------------------------- config
+_config=""
+_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --config)   _config=$2; shift 2 ;;
+    --config=*) _config=${1#*=}; shift ;;
+    *)          _args+=("$1"); shift ;;
+  esac
+done
+set -- ${_args[@]+"${_args[@]}"}
+
+if [ -z "$_config" ]; then
+  for _cand in "${SNEAKER_ROOT}/sneaker.conf" "${XDG_CONFIG_HOME:-$HOME/.config}/sneaker/config"; do
+    [ -f "$_cand" ] && { _config=$_cand; break; }
+  done
+fi
+if [ -n "$_config" ]; then
+  [ -f "$_config" ] || die "no such config: ${_config}"
+  # shellcheck disable=SC1090
+  . "$_config"
+fi
+
+usage() {
+  cat >&2 <<'USAGE'
+sneaker - staged transfer of internet artifacts into an isolated network
+
+usage: sneaker <domain> <verb> [options]
+
+domains
+  obsidian-plugins   Obsidian community plugins
+
+global options
+  --config FILE      config file (default ./sneaker.conf, then ~/.config/sneaker/config)
+  --version
+USAGE
+}
+
+case "${1:-}" in
+  ""|-h|--help|help) usage; exit 0 ;;
+  --version) printf 'sneaker %s\n' "$SNEAKER_VERSION"; exit 0 ;;
+esac
+
+_domain=$1; shift
+case "$_domain" in
+  obsidian-plugins)
+    # shellcheck source=lib/obsidian-plugins.sh
+    . "${SNEAKER_LIB}/obsidian-plugins.sh"
+    op_main "$@"
+    ;;
+  *) die "unknown domain: ${_domain} (try: obsidian-plugins)" ;;
+esac
