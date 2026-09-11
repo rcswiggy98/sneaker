@@ -28,3 +28,55 @@ DEFAULT_VAULTS=( laptop )
 # Uncomment to shrink bundles at the cost of reviewability / offline browsing.
 # FETCH_SOURCE="--no-source"
 # FETCH_CATALOG="--no-catalog"
+
+# ---------------------------------------------------------- vscode-extensions
+
+# Local staging area for VS Code bundles. Nothing here is a target.
+VE_STAGE_DIR="${HOME}/airlock/vscode-extensions"
+
+# The VS Code CLI to read version and commit from. Empty tries `code` then
+# `code.exe`, which is what you want from WSL with VS Code on PATH.
+VSCODE_CMD=""
+
+# Server directory layout on the targets. Remote-SSH decides this, not you:
+#   auto    read it off each host; whichever tree exists is the one its
+#           client built. Hosts with neither get VE_LAYOUT_DEFAULT.
+#   modern  ~/.vscode-server/cli/servers/Stable-<commit>/server
+#   legacy  ~/.vscode-server/bin/<commit>
+VE_LAYOUT="auto"
+VE_LAYOUT_DEFAULT="modern"
+
+# Named targets: alias -> ssh destination.
+HOST_ALIAS=(
+  [devbox01]="you@devbox01.example"
+  [devbox02]="you@devbox02.example"
+  [armlab01]="you@armlab01.example"
+)
+
+# VS Code platform per target. `sneaker vscode-extensions probe` fills this in
+# rather than having you maintain it by hand; a wrong value here produces an
+# extension that installs and never activates.
+HOST_PLATFORM=(
+  [devbox01]="linux-x64"
+  [devbox02]="linux-x64"
+  [armlab01]="linux-arm64"
+)
+
+# Targets that share one home directory, and therefore one ~/.vscode-server.
+# The server is staged once per group instead of once per host.
+HOST_HOME_GROUP=(
+  [devbox01]="nfs-eng"
+  [devbox02]="nfs-eng"
+)
+
+# Used when --host is not given.
+DEFAULT_HOSTS=( devbox01 armlab01 )
+
+# Stage these platforms regardless of the target list - a host you have not
+# configured yet, or a bundle you are handing to someone else.
+EXTRA_PLATFORMS=( )
+
+# How many extensions the offline Marketplace index carries. The full listing
+# is ~114k across ~570 requests and its tail is abandoned; this is ranked by
+# install count.
+VE_CATALOG_SIZE=5000

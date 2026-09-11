@@ -14,4 +14,5 @@ echo "== filesystem layer =="
 ./tests/fs_test.sh || rc=1
 echo "== end to end =="
 ./tests/smoke.sh || rc=1
+./tests/vscode_smoke.sh || rc=1
 exit $rc

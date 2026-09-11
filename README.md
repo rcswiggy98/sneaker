@@ -1,17 +1,18 @@
 # sneaker
 
 Staged transfer of internet artifacts into an isolated network, one domain at a
-time. Today that domain is `obsidian-plugins`.
+time. Today those domains are `obsidian-plugins` and `vscode-extensions`.
 
 ```
-sneaker obsidian-plugins sync --vault wsl
+sneaker obsidian-plugins  sync --vault wsl
+sneaker vscode-extensions sync --host devbox01
 ```
 
 ## What this is, and what it deliberately is not
 
 `sneaker` has two halves that cannot talk to each other.
 
-* **`bastion/fetch-obsidian-plugins.py`** runs on the internet-facing bastion.
+* **`bastion/fetch-<domain>.py`** runs on the internet-facing bastion.
   It resolves pinned repositories to their current release, downloads the
   release assets, records hashes, and writes one tarball into a staging
   directory. It contains no knowledge of the receiving side, and no code that
@@ -42,6 +43,8 @@ substitutes for whatever transfer process your environment requires.
 ```
 plugins.txt      pinned owner/repo lines - the input you review
 plugins.lock     append-only record of what crossed, when, with hashes
+extensions.txt   pinned publisher.name lines - the input you review
+extensions.lock  append-only record, with the Marketplace ids that were pinned
 sneaker.conf     your hosts and vaults (gitignored; copy the .example)
 bin/sneaker      the CLI
 sneaker.ps1      PowerShell shim that forwards into the WSL install
@@ -123,10 +126,53 @@ one implementation of the install logic. Expect one password prompt per host.
   "did anything actually change" is one comparison.
 
 ```bash
-tests/smoke.sh        # 21 checks, no network
-tests/fs_test.sh      # 13 checks on the filesystem layer
+tests/run-all.sh                    # everything below
+tests/smoke.sh                      # 21 checks, no network
+tests/vscode_smoke.sh               # 23 checks, no network and no ssh
+tests/vscode_resolve_test.py        # 11 checks on the resolution rules
+tests/fs_test.sh                    # 13 checks on the filesystem layer
 python3 tests/py36_check.py
 ```
+
+## vscode-extensions
+
+```bash
+sneaker vscode-extensions probe                 # read each host's arch and layout
+sneaker vscode-extensions sync                  # fetch, verify, place, install
+sneaker vscode-extensions sync --host armlab01  # just this one
+sneaker vscode-extensions drift                 # did IT move VS Code under you?
+sneaker vscode-extensions search yaml           # look an id up offline
+```
+
+Three artifact families cross here, not one, and each is keyed to something
+different: the VS Code Server to the **commit hash** of your install, a VSIX to
+the target's **`targetPlatform`**, and the VSIX version to **`engines.vscode`**.
+Every one of those failures is silent - the component installs and then does
+not work - which is why nothing is inferred and everything is hashed.
+
+Installing Remote-SSH does not give you remote development on its own. On first
+connection VS Code downloads a ~100MB server onto the target, keyed to your
+exact commit, and on an isolated host that download simply hangs. `sneaker`
+carries the server and places it, idempotently: a commit already present and
+marked complete costs one round trip rather than 100MB.
+
+Where it goes is decided by your Remote-SSH build, not by this tool, and it
+changed between client generations. `VE_LAYOUT="auto"` reads each host and uses
+whichever tree its client already built; `modern` and `legacy` force one.
+
+`sneaker vscode-extensions probe` fills in `HOST_PLATFORM` rather than having
+you maintain it by hand, and checks the things that are invisible until they
+are fatal: musl versus glibc, **glibc 2.28** (VS Code Server 1.86+ will not run
+below it, and RHEL 7 ships 2.17), and architectures Microsoft publishes no
+server for at all.
+
+`drift` is the answer to a managed VS Code install. Engine constraints are
+floors in practice, so extensions usually survive an update untouched; the
+server never does, because it is keyed to a commit. Run `drift` from a
+scheduled job on the laptop - it needs no network and no credentials - and an
+update becomes a notification naming the cause rather than a hung connection.
+
+See `docs/vscode-extensions.md` for the whole design.
 
 ## Constraints worth knowing
 

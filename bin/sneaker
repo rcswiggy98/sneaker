@@ -36,6 +36,30 @@ FETCH_CATALOG=""    # set to --no-catalog to omit the community plugin index
 declare -A VAULT_ALIAS=()
 declare -a DEFAULT_VAULTS=()
 
+# ------------------------------------------------- defaults: vscode-extensions
+VE_STAGE_DIR="${HOME}/airlock/vscode-extensions"
+VE_EXTENSIONS_FILE="${SNEAKER_ROOT}/extensions.txt"
+VE_LOCK_FILE="${SNEAKER_ROOT}/extensions.lock"
+# Single-quoted on purpose: these are expanded by the REMOTE shell.
+VE_SERVER_DIR='$HOME/.vscode-server'
+VE_REMOTE_TMP='$HOME/.cache/sneaker-vscode'
+# auto reads the layout off each host; modern and legacy force one.
+VE_LAYOUT="auto"
+VE_LAYOUT_DEFAULT="modern"
+VE_CATALOG_SIZE=5000
+VE_SEARCH_LIMIT=40
+# Read from `code --version` unless set here; setting them survives a managed
+# update badly, so the tool warns when it falls back to them.
+VSCODE_CMD=""
+VSCODE_VERSION=""
+VSCODE_COMMIT=""
+VSCODE_ARCH=""
+declare -A HOST_ALIAS=()
+declare -A HOST_PLATFORM=()
+declare -A HOST_HOME_GROUP=()
+declare -a DEFAULT_HOSTS=()
+declare -a EXTRA_PLATFORMS=()
+
 # ------------------------------------------------------------------- config
 _config=""
 _args=()
@@ -67,6 +91,7 @@ usage: sneaker <domain> <verb> [options]
 
 domains
   obsidian-plugins   Obsidian community plugins
+  vscode-extensions  VS Code extensions and the VS Code Server
 
 global options
   --config FILE      config file (default ./sneaker.conf, then ~/.config/sneaker/config)
@@ -86,5 +111,10 @@ case "$_domain" in
     . "${SNEAKER_LIB}/obsidian-plugins.sh"
     op_main "$@"
     ;;
-  *) die "unknown domain: ${_domain} (try: obsidian-plugins)" ;;
+  vscode-extensions)
+    # shellcheck source=lib/vscode-extensions.sh
+    . "${SNEAKER_LIB}/vscode-extensions.sh"
+    ve_main "$@"
+    ;;
+  *) die "unknown domain: ${_domain} (try: obsidian-plugins, vscode-extensions)" ;;
 esac
