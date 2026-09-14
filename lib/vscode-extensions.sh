@@ -47,16 +47,29 @@ ve_cli_dest() {  # layout commit -> empty when the layout has no separate CLI
   esac
 }
 
-ve_detect_layout() {  # host
+ve_detect_layout() {  # host -> layout on stdout; VE_LAYOUT_NOTE set when uncertain
   local host=$1 seen
+  VE_LAYOUT_NOTE=""
   case "$VE_LAYOUT" in
     modern|legacy) printf '%s' "$VE_LAYOUT"; return 0 ;;
   esac
-  seen=$(sn_ssh "$host" "if [ -d \"\$HOME/${VE_SERVER_DIR#\$HOME/}/cli/servers\" ]; then echo modern;
-    elif [ -d \"\$HOME/${VE_SERVER_DIR#\$HOME/}/bin\" ]; then echo legacy;
-    else echo none; fi" 2>/dev/null | tr -d '\r' | tail -n1)
+  seen=$(sn_ssh "$host" "d=\"\$HOME/${VE_SERVER_DIR#\$HOME/}\"; m=0; l=0
+    [ -d \"\$d/cli/servers\" ] && m=1
+    [ -d \"\$d/bin\" ] && l=1
+    echo \"\$m \$l\"" 2>/dev/null | tr -d '\r' | tail -n1)
   case "$seen" in
-    modern|legacy) printf '%s' "$seen" ;;
+    "1 "*)
+      # A modern tree only ever gets built by a modern client. Strong evidence.
+      printf 'modern' ;;
+    "0 1")
+      # A lone bin/ tree is exactly what an older tool - or an older client,
+      # before a managed update moved it - leaves behind. It says something
+      # once used the legacy layout; it says nothing about what the client
+      # wants now. Treating it as evidence places a server the client will
+      # never look at, which fails silently on first connect. So: default,
+      # and say why, and say how to settle it.
+      VE_LAYOUT_NOTE="only a legacy bin/ tree exists here, which is what a previous tool leaves behind. Using ${VE_LAYOUT_DEFAULT}. To settle it: on the laptop, View > Output > 'Remote - SSH' shows the path the client looks under; or check the setting remote.SSH.useExecServer (true = modern, false = legacy). If it is legacy, set VE_LAYOUT=\"legacy\" and re-run."
+      printf '%s' "$VE_LAYOUT_DEFAULT" ;;
     *) printf '%s' "$VE_LAYOUT_DEFAULT" ;;
   esac
 }
@@ -99,18 +112,54 @@ ve_platform_union() {
 # a managed update changes them without telling you and a stale config value
 # would resolve against a VS Code that is no longer there.
 
-ve_code_cmd() {
-  local c
-  for c in ${VSCODE_CMD:+"$VSCODE_CMD"} code code.exe; do
-    command -v "$c" >/dev/null 2>&1 && { printf '%s' "$c"; return 0; }
+ve_in_wsl() {
+  [ -n "${WSL_DISTRO_NAME:-}" ] && return 0
+  grep -qi microsoft /proc/version 2>/dev/null
+}
+
+# Run the VS Code CLI that manages the laptop's own extensions.
+#
+# From WSL, `code` resolves to a shell wrapper shipped inside the Windows
+# install, and it does one of two wrong things. With the Remote-WSL extension
+# present it hands off to the WSL *server*: --install-extension then lands in
+# ~/.vscode-server inside WSL, and --list-extensions reports that server's
+# extensions rather than the laptop's. Remote-SSH is a ui extension; installed
+# inside WSL it does not exist as far as the Windows client is concerned. With
+# Remote-WSL absent, the wrapper runs the Windows CLI but passes the WSL path
+# through untranslated, and the VSIX cannot be opened.
+#
+# So under WSL the wrapper is bypassed: the Windows CLI is reached through
+# cmd.exe and handed Windows paths. VSCODE_CMD, when set, is used verbatim.
+ve_code() {
+  local c rc
+  if [ -n "${VSCODE_CMD:-}" ]; then
+    "$VSCODE_CMD" "$@"; return $?
+  fi
+  if ve_in_wsl && command -v cmd.exe >/dev/null 2>&1; then
+    # cmd.exe refuses a UNC working directory, which every WSL path is.
+    ( cd /mnt/c 2>/dev/null || cd /; exec cmd.exe /c code "$@" ) | tr -d '\r'
+    rc=${PIPESTATUS[0]}
+    return "$rc"
+  fi
+  for c in code code.exe; do
+    command -v "$c" >/dev/null 2>&1 && { "$c" "$@"; return $?; }
   done
-  return 1
+  return 127
+}
+
+# The Windows temp directory, as a WSL path. A VSIX is copied here before
+# install so Windows VS Code opens a C:\ path rather than a \\wsl$ UNC one.
+ve_win_temp() {
+  local t
+  t=$( cd /mnt/c 2>/dev/null && cmd.exe /c 'echo %TEMP%' 2>/dev/null | tr -d '\r' )
+  [ -n "$t" ] || return 1
+  wslpath -u "$t"
 }
 
 ve_read_code_version() {
-  local cmd out
-  cmd=$(ve_code_cmd) || return 1
-  out=$("$cmd" --version 2>/dev/null | tr -d '\r') || return 1
+  local out
+  out=$(ve_code --version 2>/dev/null)
+  [ -n "$out" ] || return 1
   VE_VERSION=$(printf '%s\n' "$out" | sed -n 1p)
   VE_COMMIT=$(printf '%s\n' "$out" | sed -n 2p)
   VE_ARCH=$(printf '%s\n' "$out" | sed -n 3p)
@@ -370,6 +419,10 @@ ve_place_server() {
     return 0
   fi
 
+  if sn_ssh "$dest" "[ -d \"\$HOME/${root#\$HOME/}\" ]" 2>/dev/null; then
+    warn "replacing a server tree at ${root} that sneaker did not place"
+  fi
+
   rel=$(ve_py servers "${VE_STAGE_DIR}/current/MANIFEST.json" "$platform" "$commit" \
         | awk -F'\t' '$1=="server"{print $3}')
   [ -n "$rel" ] || die "the staged bundle carries no ${platform} server for ${commit}"
@@ -467,6 +520,7 @@ ve_install_host() {
   ssh_master "$dest"
   layout=$(ve_detect_layout "$dest")
   info "layout     ${layout}$( [ "$VE_LAYOUT" = auto ] && printf ' (detected)' )"
+  [ -z "${VE_LAYOUT_NOTE:-}" ] || warn "$VE_LAYOUT_NOTE"
 
   group=${HOST_HOME_GROUP[$alias]:-}
   if [ -n "$group" ] && [ -n "${_VE_HOME_DONE[$group]:-}" ]; then
@@ -486,8 +540,9 @@ ve_install_host() {
 }
 
 ve_install_local() {
-  local cmd id version rel n=0
-  cmd=$(ve_code_cmd) || { warn "no code CLI found; skipping local extensions"; return 0; }
+  local id version rel sha src arg tmp out rc n=0
+  ve_code --version >/dev/null 2>&1 \
+    || { warn "no VS Code CLI found; skipping local extensions"; return 0; }
   hdr "laptop  ($(ve_client_platform))"
   while IFS=$'\t' read -r id version _plat rel sha _engine _eid _pid; do
     [ -n "$id" ] || continue
@@ -495,8 +550,27 @@ ve_install_local() {
       continue
     fi
     if [ "$VE_DRY" = 1 ]; then info "would install ${id} ${version}"; n=$((n+1)); continue; fi
-    "$cmd" --install-extension "${VE_STAGE_DIR}/current/${rel}" --force >/dev/null 2>&1 \
-      || die "code --install-extension refused ${id}"
+
+    src="${VE_STAGE_DIR}/current/${rel}"
+    tmp=""; arg=$src
+    if ve_in_wsl && [ -z "${VSCODE_CMD:-}" ]; then
+      tmp="$(ve_win_temp)/sneaker-$$-$(basename "$rel")" \
+        || die "could not locate the Windows temp directory from WSL"
+      cp "$src" "$tmp" || die "could not copy ${id} to the Windows side"
+      arg=$(wslpath -w "$tmp")
+    fi
+    out=$(ve_code --install-extension "$arg" --force 2>&1); rc=$?
+    [ -n "$tmp" ] && rm -f "$tmp"
+    if [ "$rc" -ne 0 ]; then
+      printf '%s\n' "$out" | sed -e 's/^/    /' >&2
+      die "code --install-extension refused ${id}"
+    fi
+    # Verified after being written. code reports success from states in
+    # which nothing was installed, and a ui extension that is not actually on
+    # the laptop is the one thing this domain exists to put there.
+    ve_code --list-extensions 2>/dev/null | grep -qix "$id" \
+      || die "${id}: code reported success but does not list it afterwards. \
+If VS Code is running, quit it fully and re-run; see docs/first-run.md 7b."
     ok "${id} ${version}"
     ve_lock_append laptop "$id" "$version" "$(ve_client_platform)"
     n=$((n+1))
@@ -540,29 +614,94 @@ ve_status() {
   ve_require_code
   hdr "laptop"
   info "VS Code ${VE_VERSION} (${VE_COMMIT:0:12}) $(ve_client_platform)"
-  local alias dest
+
+  # Ids in extensions.txt, lowercased, so a remote inventory can be marked
+  # against what has been reviewed. Anything unmarked is what `clean --all`
+  # would drop and never put back.
+  local listed=""
+  [ -f "$VE_EXTENSIONS_FILE" ] && listed=$(grep -v '^#' "$VE_EXTENSIONS_FILE" \
+    | awk 'NF{print $1}' | sed -e 's/@.*//' | tr 'A-Z' 'a-z')
+
+  local alias dest line kind value
   for alias in $(ve_host_list); do
     dest=$(ve_host_dest "$alias")
     hdr "$alias  (${dest})"
     ssh_master "$dest"
-    sn_ssh "$dest" '
+    while IFS=$'\t' read -r kind value; do
+      case "$kind" in
+        none)   info "no ${VE_SERVER_DIR}" ;;
+        server) info "server     ${value}" ;;
+        ext)
+          if printf '%s\n' "$listed" | grep -qx "$(printf '%s' "$value" | tr 'A-Z' 'a-z')"; then
+            info "extension  ${value}"
+          else
+            warn "extension  ${value}   not in extensions.txt"
+          fi ;;
+      esac
+    done < <(sn_ssh "$dest" '
       d="$HOME/.vscode-server"
-      [ -d "$d" ] || { echo "  no ~/.vscode-server"; exit 0; }
+      [ -d "$d" ] || { printf "none\t\n"; exit 0; }
       for p in "$d"/cli/servers/Stable-* "$d"/bin/*; do
         [ -d "$p" ] || continue
         c=$(basename "$p"); c=${c#Stable-}
         if [ -f "$p/server/.sneaker-complete" ] || [ -f "$p/.sneaker-complete" ]; then
-          echo "  server $c  (placed by sneaker)"
+          printf "server\t%s  (placed by sneaker)\n" "$c"
         else
-          echo "  server $c"
+          printf "server\t%s\n" "$c"
         fi
       done
-      n=$(ls -1 "$d/extensions" 2>/dev/null | grep -c . || true)
-      echo "  extensions: ${n:-0}"' 2>/dev/null | tr -d '\r' >&2
+      # Directory names are publisher.name-version; strip from the version on.
+      ls -1 "$d/extensions" 2>/dev/null | grep -v "^\." | grep -v "^extensions.json$" \
+        | sed -E "s/-[0-9]+\.[0-9]+\.[0-9]+.*$//" | sort -u \
+        | while read -r e; do printf "ext\t%s\n" "$e"; done' 2>/dev/null | tr -d '\r')
   done
 }
 
 ve_sync() { ve_fetch; ve_stage; ve_install; }
+
+# ------------------------------------------------------------------------ clean
+#
+# Starting from a known state is sometimes the only honest move: a host that a
+# previous tool set up, in a layout the current client no longer reads, with a
+# hand-edited extensions.json on top, is not something to reason about. It is
+# something to remove.
+#
+# Two tiers. The default removes every server tree in both layouts and the CLI
+# - the parts Remote-SSH is confused by - and keeps extensions and their
+# settings. --all removes ~/.vscode-server entirely. Both confirm per host by
+# asking for the alias back, because 'y' is too easy to type at the wrong
+# prompt; --yes skips that for a run you have already read the plan for.
+
+ve_clean() {
+  local alias dest reply
+  for alias in $(ve_host_list); do
+    dest=$(ve_host_dest "$alias")
+    hdr "$alias  (${dest})"
+    if [ "$VE_ALL" = 1 ]; then
+      info "removes ${VE_SERVER_DIR} entirely: every server, the CLI, all remote"
+      info "extensions and their settings. Remote-SSH will rebuild from nothing."
+    else
+      info "removes every server tree (both layouts) and the CLI; keeps extensions"
+    fi
+    if [ "$VE_DRY" = 1 ]; then info "dry run, nothing removed"; continue; fi
+    if [ "$VE_YES" != 1 ]; then
+      printf 'type %s to confirm, anything else to skip: ' "$alias" >&2
+      read -r reply </dev/tty || reply=""
+      [ "$reply" = "$alias" ] || { warn "skipped ${alias}"; continue; }
+    fi
+    ssh_master "$dest"
+    if [ "$VE_ALL" = 1 ]; then
+      sn_ssh "$dest" "rm -rf \"\$HOME/${VE_SERVER_DIR#\$HOME/}\"" \
+        || die "could not remove ${VE_SERVER_DIR} on ${dest}"
+      ok "removed ${VE_SERVER_DIR} on ${alias}"
+    else
+      sn_ssh "$dest" "d=\"\$HOME/${VE_SERVER_DIR#\$HOME/}\"
+        rm -rf \"\$d/cli/servers\" \"\$d/bin\" \"\$d\"/code-* \"\$d\"/.*.log \"\$d\"/.*.pid \"\$d\"/.*.token 2>/dev/null; true" \
+        || die "could not remove server trees on ${dest}"
+      ok "removed all server trees and the CLI on ${alias}; extensions kept"
+    fi
+  done
+}
 
 ve_search() {
   local term=${1:-}
@@ -576,7 +715,7 @@ ve_search() {
 
 # ----------------------------------------------------------------------- args
 
-VE_HOSTS=(); VE_ONLY=""; VE_DRY=0; VE_FORCE=0; VE_BUNDLE=""
+VE_HOSTS=(); VE_ONLY=""; VE_DRY=0; VE_FORCE=0; VE_YES=0; VE_ALL=0; VE_BUNDLE=""
 VE_NO_HEDGE=""; VE_NO_CATALOG=""
 declare -A _VE_HOME_DONE=()
 
@@ -593,6 +732,7 @@ verbs
   install     place servers and install extensions
   probe       read each host's arch, libc and server layout
   status      what each host currently has
+  clean       remove server trees on a host (--all: everything under ~/.vscode-server)
   drift       compare the installed VS Code against what is staged
   search TERM look an extension up in the staged catalogue
 
@@ -605,6 +745,8 @@ options
   --no-catalog      omit the Marketplace index
   --dry-run         print the plan, change nothing
   --force           install despite a commit mismatch
+  --all             clean: remove ~/.vscode-server entirely, extensions included
+  --yes             clean: skip the per-host confirmation
 USAGE
 }
 
@@ -623,6 +765,8 @@ ve_parse_args() {
       --no-catalog) VE_NO_CATALOG=1; shift ;;
       --dry-run)    VE_DRY=1; shift ;;
       --force)      VE_FORCE=1; shift ;;
+      --all)        VE_ALL=1; shift ;;
+      --yes|-y)     VE_YES=1; shift ;;
       -h|--help)    ve_usage; exit 0 ;;
       -*)           die "unknown option: $1" ;;
       *)            VE_ARGS+=("$1"); shift ;;
@@ -646,6 +790,7 @@ ve_main() {
     sync)    ve_sync ;;
     probe)   ve_probe ;;
     status)  ve_status ;;
+    clean)   ve_clean ;;
     drift)   ve_drift ;;
     search)  ve_search ${VE_ARGS[0]+"${VE_ARGS[0]}"} ;;
     -h|--help|help) ve_usage ;;
