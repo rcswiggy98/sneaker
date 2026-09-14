@@ -558,25 +558,46 @@ ve_status() {
   ve_require_code
   hdr "laptop"
   info "VS Code ${VE_VERSION} (${VE_COMMIT:0:12}) $(ve_client_platform)"
-  local alias dest
+
+  # Ids in extensions.txt, lowercased, so a remote inventory can be marked
+  # against what has been reviewed. Anything unmarked is what `clean --all`
+  # would drop and never put back.
+  local listed=""
+  [ -f "$VE_EXTENSIONS_FILE" ] && listed=$(grep -v '^#' "$VE_EXTENSIONS_FILE" \
+    | awk 'NF{print $1}' | sed -e 's/@.*//' | tr 'A-Z' 'a-z')
+
+  local alias dest line kind value
   for alias in $(ve_host_list); do
     dest=$(ve_host_dest "$alias")
     hdr "$alias  (${dest})"
     ssh_master "$dest"
-    sn_ssh "$dest" '
+    while IFS=$'\t' read -r kind value; do
+      case "$kind" in
+        none)   info "no ${VE_SERVER_DIR}" ;;
+        server) info "server     ${value}" ;;
+        ext)
+          if printf '%s\n' "$listed" | grep -qx "$(printf '%s' "$value" | tr 'A-Z' 'a-z')"; then
+            info "extension  ${value}"
+          else
+            warn "extension  ${value}   not in extensions.txt"
+          fi ;;
+      esac
+    done < <(sn_ssh "$dest" '
       d="$HOME/.vscode-server"
-      [ -d "$d" ] || { echo "  no ~/.vscode-server"; exit 0; }
+      [ -d "$d" ] || { printf "none\t\n"; exit 0; }
       for p in "$d"/cli/servers/Stable-* "$d"/bin/*; do
         [ -d "$p" ] || continue
         c=$(basename "$p"); c=${c#Stable-}
         if [ -f "$p/server/.sneaker-complete" ] || [ -f "$p/.sneaker-complete" ]; then
-          echo "  server $c  (placed by sneaker)"
+          printf "server\t%s  (placed by sneaker)\n" "$c"
         else
-          echo "  server $c"
+          printf "server\t%s\n" "$c"
         fi
       done
-      n=$(ls -1 "$d/extensions" 2>/dev/null | grep -c . || true)
-      echo "  extensions: ${n:-0}"' 2>/dev/null | tr -d '\r' >&2
+      # Directory names are publisher.name-version; strip from the version on.
+      ls -1 "$d/extensions" 2>/dev/null | grep -v "^\." | grep -v "^extensions.json$" \
+        | sed -E "s/-[0-9]+\.[0-9]+\.[0-9]+.*$//" | sort -u \
+        | while read -r e; do printf "ext\t%s\n" "$e"; done' 2>/dev/null | tr -d '\r')
   done
 }
 

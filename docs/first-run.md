@@ -232,6 +232,19 @@ A host with a server placed by an older script, in a layout the current client
 no longer reads, possibly with a hand-edited `extensions.json` on top, is not a
 state to reason about. Remove it and let `sneaker` rebuild it.
 
+**Inventory first.** The extensions an older tool installed live on the *host*,
+under `~/.vscode-server/extensions/`. `code --list-extensions` on the laptop
+lists the laptop's extensions and nothing else; it will never show these, and
+that is not a fault. `status` will:
+
+```bash
+./bin/sneaker vscode-extensions status --host SCRATCH
+```
+
+Every extension it marks `not in extensions.txt` is one `clean --all` removes
+and `install` does not put back. Review each on the Marketplace, add the ones
+you want as `publisher.name` lines, re-run `fetch` and `stage`, and only then:
+
 ```bash
 ./bin/sneaker vscode-extensions clean --all --host SCRATCH
 ./bin/sneaker vscode-extensions install --host SCRATCH
