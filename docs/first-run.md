@@ -80,11 +80,24 @@ command -v ssh scp tar sha256sum python3
 ```
 
 **Expect:** three lines from `code --version` — version, commit, arch. If WSL
-cannot find `code`, VS Code is not on your Windows PATH; set `VSCODE_CMD` in
-config to the full path of `code.cmd`, or re-run the VS Code installer with the
-PATH option ticked.
+cannot find `code`, VS Code is not on your Windows PATH; re-run the VS Code
+installer with the PATH option ticked.
 
 Write down the commit. Everything keys off it.
+
+**A trap worth knowing about `code` from a WSL shell.** It resolves to a shell
+wrapper inside the Windows install, and that wrapper is not the Windows CLI.
+With the Remote-WSL extension installed it hands off to the *WSL server*: a
+`code --list-extensions` typed in WSL then lists the server's extensions inside
+WSL, not the laptop's, and `code --install-extension` installs there too. With
+Remote-WSL absent, it runs the Windows CLI but passes WSL paths through
+untranslated. `sneaker` bypasses the wrapper for its own calls. For anything
+you type by hand that is about the *laptop's* extensions, use PowerShell, or
+from WSL:
+
+```bash
+cmd.exe /c code --list-extensions
+```
 
 ---
 
@@ -292,6 +305,12 @@ Reset it by hand:
 4. Start VS Code and confirm the extension shows as installed and enabled in
    the Extensions view before trying to connect.
 
+If you removed the whole `.vscode\extensions` directory rather than just the
+Remote-SSH entries, everything else the laptop had is gone too — including
+**Remote-WSL** (`ms-vscode-remote.remote-wsl`), which you want back if you ever
+open a WSL folder in VS Code. It is a `ui` extension from the same publisher;
+add the line to `extensions.txt` and it comes back on the next `sync`.
+
 ---
 
 ## 8. Prove it works — connect for real
@@ -413,7 +432,8 @@ only discards the download cache, so the next run is slower, not different.
 
 * The failing command and its full output — everything names its cause, so the
   message usually is the diagnosis.
-* `code --version` (all three lines).
+* `code --version` (all three lines), and `cmd.exe /c code --list-extensions`
+  from WSL - the second form, so it reports the laptop and not the WSL server.
 * `./bin/sneaker vscode-extensions probe` for the host involved.
 * `ssh TARGET 'ls -la ~/.vscode-server/ ~/.vscode-server/cli/servers/ 2>&1'`.
 * From the bastion, the step 1 egress table.

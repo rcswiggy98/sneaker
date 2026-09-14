@@ -115,6 +115,41 @@ check "--all tier removes everything" $? 0
 "${ROOT}/bin/sneaker" --config "${WORK}/clean.conf" vscode-extensions clean --bogus >/dev/null 2>&1
 refused "unknown option is refused" $?
 
+echo "== local install: errors are surfaced, success is verified =="
+# A stand-in `code` on PATH. The real one is exercised at work; what is
+# tested here is that sneaker neither hides what it says nor believes it.
+FAKEBIN="${WORK}/bin"; mkdir -p "$FAKEBIN"
+cat > "${FAKEBIN}/code" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  --version) printf '1.133.0\n%s\nx64\n' "$FAKE_COMMIT" ;;
+  --install-extension)
+    [ "$FAKE_MODE" = refuse ] && { echo "Failed Installing Extensions: boom-from-code" >&2; exit 1; }
+    exit 0 ;;
+  --list-extensions)
+    [ "$FAKE_MODE" = lie ] || echo "pub.local"
+    ;;
+esac
+FAKE
+chmod +x "${FAKEBIN}/code"
+local_run() { PATH="${FAKEBIN}:${PATH}" FAKE_COMMIT="$COMMIT" FAKE_MODE="$1" \
+  "${ROOT}/bin/sneaker" --config "$CONF" vscode-extensions install 2>&1; }
+
+out=$(local_run refuse)
+refused "a refusal from code fails the install" $?
+printf '%s' "$out" | grep -q 'boom-from-code'
+check "what code said is shown, not swallowed" $? 0
+
+out=$(local_run lie)
+refused "success that does not list afterwards is not believed" $?
+printf '%s' "$out" | grep -q 'does not list it afterwards'
+check "the post-install check names the failure" $? 0
+
+out=$(local_run ok)
+check "a verified install succeeds" $? 0
+grep -q 'laptop	pub.local	1.0.0	win32-x64' "${WORK}/extensions.lock"
+check "the crossing is recorded in the lock" $? 0
+
 echo "== offline catalogue search =="
 out=$(sneaker search yaml 2>&1)
 printf '%s' "$out" | grep -q 'pub.yaml'

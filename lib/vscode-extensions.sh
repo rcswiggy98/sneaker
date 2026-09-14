@@ -112,18 +112,54 @@ ve_platform_union() {
 # a managed update changes them without telling you and a stale config value
 # would resolve against a VS Code that is no longer there.
 
-ve_code_cmd() {
-  local c
-  for c in ${VSCODE_CMD:+"$VSCODE_CMD"} code code.exe; do
-    command -v "$c" >/dev/null 2>&1 && { printf '%s' "$c"; return 0; }
+ve_in_wsl() {
+  [ -n "${WSL_DISTRO_NAME:-}" ] && return 0
+  grep -qi microsoft /proc/version 2>/dev/null
+}
+
+# Run the VS Code CLI that manages the laptop's own extensions.
+#
+# From WSL, `code` resolves to a shell wrapper shipped inside the Windows
+# install, and it does one of two wrong things. With the Remote-WSL extension
+# present it hands off to the WSL *server*: --install-extension then lands in
+# ~/.vscode-server inside WSL, and --list-extensions reports that server's
+# extensions rather than the laptop's. Remote-SSH is a ui extension; installed
+# inside WSL it does not exist as far as the Windows client is concerned. With
+# Remote-WSL absent, the wrapper runs the Windows CLI but passes the WSL path
+# through untranslated, and the VSIX cannot be opened.
+#
+# So under WSL the wrapper is bypassed: the Windows CLI is reached through
+# cmd.exe and handed Windows paths. VSCODE_CMD, when set, is used verbatim.
+ve_code() {
+  local c rc
+  if [ -n "${VSCODE_CMD:-}" ]; then
+    "$VSCODE_CMD" "$@"; return $?
+  fi
+  if ve_in_wsl && command -v cmd.exe >/dev/null 2>&1; then
+    # cmd.exe refuses a UNC working directory, which every WSL path is.
+    ( cd /mnt/c 2>/dev/null || cd /; exec cmd.exe /c code "$@" ) | tr -d '\r'
+    rc=${PIPESTATUS[0]}
+    return "$rc"
+  fi
+  for c in code code.exe; do
+    command -v "$c" >/dev/null 2>&1 && { "$c" "$@"; return $?; }
   done
-  return 1
+  return 127
+}
+
+# The Windows temp directory, as a WSL path. A VSIX is copied here before
+# install so Windows VS Code opens a C:\ path rather than a \\wsl$ UNC one.
+ve_win_temp() {
+  local t
+  t=$( cd /mnt/c 2>/dev/null && cmd.exe /c 'echo %TEMP%' 2>/dev/null | tr -d '\r' )
+  [ -n "$t" ] || return 1
+  wslpath -u "$t"
 }
 
 ve_read_code_version() {
-  local cmd out
-  cmd=$(ve_code_cmd) || return 1
-  out=$("$cmd" --version 2>/dev/null | tr -d '\r') || return 1
+  local out
+  out=$(ve_code --version 2>/dev/null)
+  [ -n "$out" ] || return 1
   VE_VERSION=$(printf '%s\n' "$out" | sed -n 1p)
   VE_COMMIT=$(printf '%s\n' "$out" | sed -n 2p)
   VE_ARCH=$(printf '%s\n' "$out" | sed -n 3p)
@@ -504,8 +540,9 @@ ve_install_host() {
 }
 
 ve_install_local() {
-  local cmd id version rel n=0
-  cmd=$(ve_code_cmd) || { warn "no code CLI found; skipping local extensions"; return 0; }
+  local id version rel sha src arg tmp out rc n=0
+  ve_code --version >/dev/null 2>&1 \
+    || { warn "no VS Code CLI found; skipping local extensions"; return 0; }
   hdr "laptop  ($(ve_client_platform))"
   while IFS=$'\t' read -r id version _plat rel sha _engine _eid _pid; do
     [ -n "$id" ] || continue
@@ -513,8 +550,27 @@ ve_install_local() {
       continue
     fi
     if [ "$VE_DRY" = 1 ]; then info "would install ${id} ${version}"; n=$((n+1)); continue; fi
-    "$cmd" --install-extension "${VE_STAGE_DIR}/current/${rel}" --force >/dev/null 2>&1 \
-      || die "code --install-extension refused ${id}"
+
+    src="${VE_STAGE_DIR}/current/${rel}"
+    tmp=""; arg=$src
+    if ve_in_wsl && [ -z "${VSCODE_CMD:-}" ]; then
+      tmp="$(ve_win_temp)/sneaker-$$-$(basename "$rel")" \
+        || die "could not locate the Windows temp directory from WSL"
+      cp "$src" "$tmp" || die "could not copy ${id} to the Windows side"
+      arg=$(wslpath -w "$tmp")
+    fi
+    out=$(ve_code --install-extension "$arg" --force 2>&1); rc=$?
+    [ -n "$tmp" ] && rm -f "$tmp"
+    if [ "$rc" -ne 0 ]; then
+      printf '%s\n' "$out" | sed -e 's/^/    /' >&2
+      die "code --install-extension refused ${id}"
+    fi
+    # Verified after being written. code reports success from states in
+    # which nothing was installed, and a ui extension that is not actually on
+    # the laptop is the one thing this domain exists to put there.
+    ve_code --list-extensions 2>/dev/null | grep -qix "$id" \
+      || die "${id}: code reported success but does not list it afterwards. \
+If VS Code is running, quit it fully and re-run; see docs/first-run.md 7b."
     ok "${id} ${version}"
     ve_lock_append laptop "$id" "$version" "$(ve_client_platform)"
     n=$((n+1))
