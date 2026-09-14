@@ -12,6 +12,13 @@
 
 VE_BUNDLE_ROOT="sneaker-vscode-extensions"
 
+# A run here is fetch, read the plan, then install, with hundred-megabyte
+# transfers in between. The obsidian default of 180s covers back-to-back
+# commands but expires in the gap where you are reading, and the cost of that
+# is retyping a bastion password mid-run. Raised, not removed: the master still
+# ages out rather than persisting past the session.
+SNEAKER_CONTROL_PERSIST=${VE_CONTROL_PERSIST:-1800}
+
 # ------------------------------------------------------------------- layout
 #
 # Where Remote-SSH expects the server is decided by the Remote-SSH build on the

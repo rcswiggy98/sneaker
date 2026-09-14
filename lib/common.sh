@@ -47,7 +47,7 @@ ssh_setup() {
 
 # Emit ssh options as separate words. Callers use: $(ssh_opts)
 ssh_opts() {
-  printf '%s' "-o ControlMaster=auto -o ControlPath=${SNEAKER_CM_DIR}/%C -o ControlPersist=180 -o ConnectTimeout=20"
+  printf '%s' "-o ControlMaster=auto -o ControlPath=${SNEAKER_CM_DIR}/%C -o ControlPersist=${SNEAKER_CONTROL_PERSIST:-180} -o ConnectTimeout=20"
 }
 
 # ssh_master HOST -- open the shared connection now, so the password prompt
