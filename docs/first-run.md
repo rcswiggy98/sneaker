@@ -143,8 +143,26 @@ step 4a settle it in under a minute, and `VE_LAYOUT="legacy"` is the whole fix.
 
 ## 4a. Settle the layout from the laptop, not the host
 
-The host cannot tell you which layout the client wants. The client can, two
-ways:
+The host *can* tell you, but only after the client has tried and failed once —
+and that footprint is the most reliable evidence there is:
+
+**The footprint.** After one failed connection attempt, look on the host:
+
+```bash
+ssh SCRATCH 'ls -la ~/.vscode-server/bin/*/ ~/.vscode-server/cli/servers/*/ 2>/dev/null'
+```
+
+A **zero-byte `vscode-server.tar.gz` inside `bin/<commit>/`** is Remote-SSH's
+own legacy bootstrap: it made the directory it reads from and tried to
+download into it. Nothing else writes that file there. That client uses the
+**legacy** layout, full stop — set `VE_LAYOUT="legacy"`. A partial tree under
+`cli/servers/Stable-<commit>/` that sneaker did not place means modern.
+`sneaker vscode-extensions probe` and `status` both report this footprint when
+they see it, and `auto` now reads it: a tree for the commit *in use* that
+sneaker did not create is taken as the client's answer, whichever layout it is
+in. Trees for other commits are treated as residue.
+
+Before that first attempt, the client can tell you two ways:
 
 **The setting.** In VS Code, open Settings and search `useExecServer`. The
 setting `Remote.SSH: Use Exec Server` decides it: **on = modern**
@@ -156,8 +174,9 @@ always predates a managed update that flipped the client.
 from the dropdown. It prints the exact path it probed. If you see
 `~/.vscode-server/bin/<commit>` it is legacy; `cli/servers` is modern.
 
-If either says legacy, set `VE_LAYOUT="legacy"` in `sneaker.conf`. Otherwise
-leave `auto`.
+If any of these says legacy, set `VE_LAYOUT="legacy"` in `sneaker.conf`.
+Otherwise leave `auto`. Setting it explicitly also stops `auto` from having to
+re-read the host every run.
 
 **Stop and reconsider if you see** `glibc X is below 2.28` (that host cannot run
 a modern server at all) or `no VS Code Server is published for armhf` (32-bit
@@ -336,9 +355,11 @@ code --version   # in WSL, second line
 ```
 
 The directory the log probes must exist and contain the commit `code
---version` prints. If the log probes `cli/servers` and the server sits under
-`bin/` (or vice versa), the layout is wrong: set `VE_LAYOUT` to match the log,
-`clean --host SCRATCH`, and re-run step 7. If the path is right but the commit
+--version` prints. Look first for a **zero-byte `vscode-server.tar.gz` under
+`bin/<commit>/`** — that is the client having tried the legacy layout itself
+(step 4a), and it settles the question. If the log probes `cli/servers` and the
+server sits under `bin/` (or vice versa), the layout is wrong: set `VE_LAYOUT`
+to match, `clean --host SCRATCH`, and re-run step 7. If the path is right but the commit
 differs, VS Code moved under you: `drift` will say so, and it is a bastion
 trip.
 

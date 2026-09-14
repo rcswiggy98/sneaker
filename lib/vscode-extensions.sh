@@ -47,31 +47,53 @@ ve_cli_dest() {  # layout commit -> empty when the layout has no separate CLI
   esac
 }
 
-ve_detect_layout() {  # host -> layout on stdout; VE_LAYOUT_NOTE set when uncertain
-  local host=$1 seen
+# Decide the layout from four facts about the host. Sets VE_LAYOUT_DETECTED
+# and VE_LAYOUT_NOTE; prints nothing, so it can be called without a subshell.
+#
+#   mc  a cli/servers/Stable-<commit> tree for the CURRENT commit that sneaker
+#       did not place
+#   lc  a bin/<commit> tree for the CURRENT commit that sneaker did not place
+#   ma  any cli/servers tree at all
+#   la  any bin tree at all
+#
+# The first two are the client's own footprint: when Remote-SSH cannot find a
+# server it builds the directory it wants and tries to download into it, and
+# on an isolated host that leaves the directory - in the legacy case with a
+# zero-byte vscode-server.tar.gz inside. A tree for the commit in use that we
+# did not create is therefore the client telling us which layout it reads.
+# Trees for other commits are residue: they say what some client once did.
+ve_layout_decide() {  # mc lc ma la
+  local mc=${1:-0} lc=${2:-0} ma=${3:-0} la=${4:-0}
+  VE_LAYOUT_NOTE=""
+  if [ "$lc" = 1 ] && [ "$mc" != 1 ]; then
+    VE_LAYOUT_DETECTED=legacy
+    VE_LAYOUT_NOTE="the client built bin/<commit> for the commit in use - its own legacy self-install attempt. This client reads the legacy layout; consider setting VE_LAYOUT=\"legacy\" so this is not re-detected each run."
+    return 0
+  fi
+  if [ "$mc" = 1 ]; then VE_LAYOUT_DETECTED=modern; return 0; fi
+  if [ "$ma" = 1 ]; then VE_LAYOUT_DETECTED=modern; return 0; fi
+  if [ "$la" = 1 ]; then
+    VE_LAYOUT_DETECTED=$VE_LAYOUT_DEFAULT
+    VE_LAYOUT_NOTE="only a legacy bin/ tree for other commits exists here - what a previous tool or an older client left behind. It says nothing about what the client wants now; using ${VE_LAYOUT_DEFAULT}. To settle it: connect once and look for bin/<commit>/vscode-server.tar.gz (legacy) on the host, or read the path in View > Output > 'Remote - SSH' on the laptop. If legacy, set VE_LAYOUT=\"legacy\"."
+    return 0
+  fi
+  VE_LAYOUT_DETECTED=$VE_LAYOUT_DEFAULT
+}
+
+ve_detect_layout() {  # host commit -> sets VE_LAYOUT_DETECTED, VE_LAYOUT_NOTE
+  local host=$1 commit=$2 facts
   VE_LAYOUT_NOTE=""
   case "$VE_LAYOUT" in
-    modern|legacy) printf '%s' "$VE_LAYOUT"; return 0 ;;
+    modern|legacy) VE_LAYOUT_DETECTED=$VE_LAYOUT; return 0 ;;
   esac
-  seen=$(sn_ssh "$host" "d=\"\$HOME/${VE_SERVER_DIR#\$HOME/}\"; m=0; l=0
-    [ -d \"\$d/cli/servers\" ] && m=1
-    [ -d \"\$d/bin\" ] && l=1
-    echo \"\$m \$l\"" 2>/dev/null | tr -d '\r' | tail -n1)
-  case "$seen" in
-    "1 "*)
-      # A modern tree only ever gets built by a modern client. Strong evidence.
-      printf 'modern' ;;
-    "0 1")
-      # A lone bin/ tree is exactly what an older tool - or an older client,
-      # before a managed update moved it - leaves behind. It says something
-      # once used the legacy layout; it says nothing about what the client
-      # wants now. Treating it as evidence places a server the client will
-      # never look at, which fails silently on first connect. So: default,
-      # and say why, and say how to settle it.
-      VE_LAYOUT_NOTE="only a legacy bin/ tree exists here, which is what a previous tool leaves behind. Using ${VE_LAYOUT_DEFAULT}. To settle it: on the laptop, View > Output > 'Remote - SSH' shows the path the client looks under; or check the setting remote.SSH.useExecServer (true = modern, false = legacy). If it is legacy, set VE_LAYOUT=\"legacy\" and re-run."
-      printf '%s' "$VE_LAYOUT_DEFAULT" ;;
-    *) printf '%s' "$VE_LAYOUT_DEFAULT" ;;
-  esac
+  facts=$(sn_ssh "$host" "d=\"\$HOME/${VE_SERVER_DIR#\$HOME/}\"; mc=0; lc=0; ma=0; la=0
+    [ -d \"\$d/cli/servers/Stable-${commit}\" ] && [ ! -f \"\$d/cli/servers/Stable-${commit}/server/.sneaker-complete\" ] && mc=1
+    [ -d \"\$d/bin/${commit}\" ] && [ ! -f \"\$d/bin/${commit}/.sneaker-complete\" ] && lc=1
+    [ -d \"\$d/cli/servers\" ] && ma=1
+    [ -d \"\$d/bin\" ] && la=1
+    echo \"\$mc \$lc \$ma \$la\"" 2>/dev/null | tr -d '\r' | tail -n1)
+  # shellcheck disable=SC2086
+  ve_layout_decide $facts
 }
 
 # ------------------------------------------------------------------- targets
@@ -346,7 +368,7 @@ ve_staged_or_die() {
 # it off the host is better than maintaining it by hand.
 
 ve_probe() {
-  local alias dest out arch libc glibc layout commits
+  local alias dest out arch libc glibc layout commits selfinstall
   for alias in $(ve_host_list); do
     dest=$(ve_host_dest "$alias")
     hdr "$alias  (${dest})"
@@ -362,6 +384,9 @@ ve_probe() {
       else printf "layout\tnone\n"; fi
       ls -1 "$HOME/.vscode-server/cli/servers" 2>/dev/null | sed -e "s/^Stable-/server\t/"
       ls -1 "$HOME/.vscode-server/bin" 2>/dev/null | sed -e "s/^/server\t/"
+      for t in "$HOME"/.vscode-server/bin/*/vscode-server.tar.gz; do
+        [ -f "$t" ] && [ ! -s "$t" ] && printf "selfinstall\tlegacy\t%s\n" "$(basename "$(dirname "$t")")"
+      done
       printf "home\t%s\n" "$(stat -c %d:%i "$HOME" 2>/dev/null || echo unknown)"
     ' 2>/dev/null | tr -d '\r')
 
@@ -370,6 +395,7 @@ ve_probe() {
     glibc=$(printf '%s\n' "$out" | awk -F'\t' '$1=="glibc"{print $2}')
     layout=$(printf '%s\n' "$out" | awk -F'\t' '$1=="layout"{print $2}')
     commits=$(printf '%s\n' "$out" | awk -F'\t' '$1=="server"{print $2}' | paste -sd' ' -)
+    selfinstall=$(printf '%s\n' "$out" | awk -F'\t' '$1=="selfinstall"{print $3}' | paste -sd' ' -)
 
     local plat=""
     case "${libc}-${arch}" in
@@ -383,6 +409,14 @@ ve_probe() {
     info "uname -m   ${arch:-?}"
     info "libc       ${libc:-?}${glibc:+ ${glibc}}"
     info "layout     ${layout:-?}${commits:+  (servers: ${commits})}"
+    if [ -n "$selfinstall" ]; then
+      # A zero-byte vscode-server.tar.gz under bin/<commit> is Remote-SSH's own
+      # legacy bootstrap failing to download. Nothing else writes that file
+      # there, and it settles the layout question outright.
+      warn "Remote-SSH tried to self-install in the LEGACY layout for ${selfinstall}"
+      warn "(zero-byte bin/<commit>/vscode-server.tar.gz). This client reads legacy:"
+      warn "set VE_LAYOUT=\"legacy\" in sneaker.conf"
+    fi
     if [ -z "$plat" ]; then
       err "no VS Code platform matches ${libc}/${arch}"
     else
@@ -518,7 +552,10 @@ ve_install_host() {
   platform=$(ve_host_platform "$alias")
   hdr "$alias  (${dest}, ${platform})"
   ssh_master "$dest"
-  layout=$(ve_detect_layout "$dest")
+  commit=$(ve_py summary "${VE_STAGE_DIR}/current/MANIFEST.json" \
+           | awk -F'\t' '$1=="vscode_commit"{print $2}')
+  ve_detect_layout "$dest" "$commit"
+  layout=$VE_LAYOUT_DETECTED
   info "layout     ${layout}$( [ "$VE_LAYOUT" = auto ] && printf ' (detected)' )"
   [ -z "${VE_LAYOUT_NOTE:-}" ] || warn "$VE_LAYOUT_NOTE"
 
@@ -534,8 +571,6 @@ ve_install_host() {
     [ -n "$group" ] && _VE_HOME_DONE[$group]=$alias
   fi
 
-  commit=$(ve_py summary "${VE_STAGE_DIR}/current/MANIFEST.json" \
-           | awk -F'\t' '$1=="vscode_commit"{print $2}')
   [ "$VE_DRY" = 1 ] || ve_install_remote_extensions "$dest" "$layout" "$commit" "$platform" "$alias"
 }
 
@@ -646,8 +681,10 @@ ve_status() {
         c=$(basename "$p"); c=${c#Stable-}
         if [ -f "$p/server/.sneaker-complete" ] || [ -f "$p/.sneaker-complete" ]; then
           printf "server\t%s  (placed by sneaker)\n" "$c"
+        elif [ -f "$p/vscode-server.tar.gz" ] && [ ! -s "$p/vscode-server.tar.gz" ]; then
+          printf "server\t%s  (Remote-SSH legacy self-install attempt: client reads LEGACY, set VE_LAYOUT=legacy)\n" "$c"
         else
-          printf "server\t%s\n" "$c"
+          printf "server\t%s  (not placed by sneaker)\n" "$c"
         fi
       done
       # Directory names are publisher.name-version; strip from the version on.

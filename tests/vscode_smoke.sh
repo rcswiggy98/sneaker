@@ -79,6 +79,20 @@ check "modern layout places a CLI" "$got" '$HOME/.vscode-server/code-deadbeef'
 got=$(layout 've_cli_dest legacy deadbeef')
 check "legacy layout has no separate CLI" "$got" ''
 
+echo "== the client's own footprint decides the layout =="
+decide() { layout "ve_layout_decide $1; printf '%s' \"\$VE_LAYOUT_DETECTED\""; }
+#              mc lc ma la
+got=$(decide "0 1 0 1"); check "bin/<commit> the client built for the commit in use means legacy" "$got" legacy
+got=$(decide "0 1 1 1"); check "...even when an old modern tree also exists" "$got" legacy
+got=$(decide "1 0 1 1"); check "cli/servers/<commit> the client built means modern" "$got" modern
+got=$(decide "0 0 1 1"); check "a modern tree for other commits means modern" "$got" modern
+got=$(decide "0 0 0 1"); check "a legacy tree for other commits alone is residue: default" "$got" modern
+got=$(decide "0 0 0 0"); check "nothing on the host: default" "$got" modern
+got=$(layout "ve_layout_decide 0 0 0 1; printf '%s' \"\$VE_LAYOUT_NOTE\"" | grep -c "left behind")
+check "residue is explained, not silently defaulted" "$got" 1
+got=$(layout "VE_LAYOUT=legacy; ve_detect_layout unused-host x; printf '%s' \"\$VE_LAYOUT_DETECTED\"")
+check "an explicit VE_LAYOUT wins without touching the host" "$got" legacy
+
 echo "== an invalid layout is refused rather than guessed at =="
 sneaker stage --layout sideways >/dev/null 2>&1
 refused "reject --layout sideways" $?
