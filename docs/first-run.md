@@ -119,10 +119,32 @@ present, and a line to paste into config:
 
 Paste those into `sneaker.conf`.
 
-**Read the layout line carefully.** If a host that your batch tool already set
-up reports `modern`, that confirms the default. If it reports `legacy`, set
-`VE_LAYOUT="legacy"` — you have older clients than expected and that one line
-is the whole fix.
+**Read the layout line carefully, and do not trust a lone `bin/` tree.** A
+host set up by an older tool will show a legacy `bin/` tree. That tree records
+what *something* once did; it says nothing about what your current Remote-SSH
+looks for. `auto` therefore treats it as residue - uses the modern layout and
+warns - rather than as evidence. If you actually need legacy, the two checks in
+step 4a settle it in under a minute, and `VE_LAYOUT="legacy"` is the whole fix.
+
+---
+
+## 4a. Settle the layout from the laptop, not the host
+
+The host cannot tell you which layout the client wants. The client can, two
+ways:
+
+**The setting.** In VS Code, open Settings and search `useExecServer`. The
+setting `Remote.SSH: Use Exec Server` decides it: **on = modern**
+(`cli/servers/Stable-<commit>`), **off = legacy** (`bin/<commit>`). It has
+defaulted to on for several years, so a leftover `bin/` tree on a host almost
+always predates a managed update that flipped the client.
+
+**The log.** After any connection attempt, View > Output, pick **Remote - SSH**
+from the dropdown. It prints the exact path it probed. If you see
+`~/.vscode-server/bin/<commit>` it is legacy; `cli/servers` is modern.
+
+If either says legacy, set `VE_LAYOUT="legacy"` in `sneaker.conf`. Otherwise
+leave `auto`.
 
 **Stop and reconsider if you see** `glibc X is below 2.28` (that host cannot run
 a modern server at all) or `no VS Code Server is published for armhf` (32-bit
@@ -204,6 +226,61 @@ Rollback — but know it is happening.
 
 ---
 
+## 7a. If a previous tool set this host up: start from nothing
+
+A host with a server placed by an older script, in a layout the current client
+no longer reads, possibly with a hand-edited `extensions.json` on top, is not a
+state to reason about. Remove it and let `sneaker` rebuild it.
+
+```bash
+./bin/sneaker vscode-extensions clean --all --host SCRATCH
+./bin/sneaker vscode-extensions install --host SCRATCH
+```
+
+`clean --all` removes `~/.vscode-server` entirely on that host - every server,
+the CLI, every remote extension and its settings. It asks you to type the host
+alias back before doing so. Without `--all` it removes only the server trees
+(both layouts) and the CLI, and keeps extensions; that is enough when the only
+problem is the layout.
+
+Any extension that lived on the host before but is not in `extensions.txt` is
+gone after `--all`. That is the point: what lands is what you reviewed. If you
+want it back, review it, add the line, re-run.
+
+## 7b. If Remote-SSH on the laptop is itself broken
+
+VS Code can hold an extension in a half-uninstalled state - directory present,
+marked obsolete, not loaded - and `--install-extension --force` on top of that
+does not always clear it. `sneaker` will report success because `code` did.
+Reset it by hand:
+
+1. **Quit VS Code completely.** Not close-the-window: check Task Manager for
+   `Code.exe`. The extension host keeps the directory locked and re-marks it
+   obsolete on next start.
+2. In PowerShell:
+   ```powershell
+   code --uninstall-extension ms-vscode-remote.remote-ssh
+   code --uninstall-extension ms-vscode-remote.remote-ssh-edit
+   code --uninstall-extension ms-vscode.remote-explorer
+   Get-ChildItem "$env:USERPROFILE\.vscode\extensions" |
+     Where-Object Name -match '^(ms-vscode-remote\.remote-ssh|ms-vscode\.remote-explorer)' |
+     Remove-Item -Recurse -Force
+   Remove-Item "$env:USERPROFILE\.vscode\extensions\.obsolete" -ErrorAction SilentlyContinue
+   code --list-extensions | Select-String remote
+   ```
+   The last line should print nothing. `.obsolete` is a list of directories VS
+   Code intends to delete on next start; removing the file is safe, it is
+   rebuilt as needed.
+3. Back in WSL, reinstall just the laptop side:
+   ```bash
+   ./bin/sneaker vscode-extensions install --host SCRATCH \
+       --only ms-vscode-remote.remote-ssh,ms-vscode-remote.remote-ssh-edit,ms-vscode.remote-explorer
+   ```
+4. Start VS Code and confirm the extension shows as installed and enabled in
+   the Extensions view before trying to connect.
+
+---
+
 ## 8. Prove it works — connect for real
 
 In VS Code on the laptop: **Remote-SSH: Connect to Host**, pick the scratch
@@ -217,17 +294,21 @@ confirm it behaves. An extension that installs and does not activate is the
 exact failure mode all the platform matching exists to prevent, so this is
 worth doing properly rather than assuming.
 
-If it hangs on "Downloading VS Code Server", the commit or the layout is wrong.
-Check:
+If it hangs on "Downloading VS Code Server", the commit or the layout is wrong,
+and the **Remote - SSH output log** (step 4a) names which: it prints the exact
+path it probed. Compare against the host:
 
 ```bash
-ssh SCRATCH 'ls ~/.vscode-server/ ~/.vscode-server/cli/servers/ 2>/dev/null'
+ssh SCRATCH 'ls ~/.vscode-server/ ~/.vscode-server/cli/servers/ ~/.vscode-server/bin/ 2>/dev/null'
 code --version   # in WSL, second line
 ```
 
-The directory name must contain the commit `code --version` prints. If the tree
-is under `bin/` rather than `cli/servers/`, set `VE_LAYOUT="legacy"` and re-run
-step 7.
+The directory the log probes must exist and contain the commit `code
+--version` prints. If the log probes `cli/servers` and the server sits under
+`bin/` (or vice versa), the layout is wrong: set `VE_LAYOUT` to match the log,
+`clean --host SCRATCH`, and re-run step 7. If the path is right but the commit
+differs, VS Code moved under you: `drift` will say so, and it is a bastion
+trip.
 
 ---
 
@@ -287,10 +368,16 @@ so `drift` is early warning rather than the only guard.
 
 ## Rollback
 
-Nothing here is destructive beyond the server directory for one commit.
+Nothing here is destructive beyond the server directory for one commit, and
+`clean` is the supported way to go further than that.
 
 ```bash
-# remove what sneaker placed on a host, for one commit
+# remove every server tree and the CLI on a host, keep extensions
+./bin/sneaker vscode-extensions clean --host TARGET
+# remove ~/.vscode-server entirely
+./bin/sneaker vscode-extensions clean --all --host TARGET
+
+# or by hand, for one commit
 ssh TARGET 'rm -rf ~/.vscode-server/cli/servers/Stable-<commit> \
                   ~/.vscode-server/bin/<commit> \
                   ~/.vscode-server/code-<commit>'

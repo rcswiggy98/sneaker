@@ -47,16 +47,29 @@ ve_cli_dest() {  # layout commit -> empty when the layout has no separate CLI
   esac
 }
 
-ve_detect_layout() {  # host
+ve_detect_layout() {  # host -> layout on stdout; VE_LAYOUT_NOTE set when uncertain
   local host=$1 seen
+  VE_LAYOUT_NOTE=""
   case "$VE_LAYOUT" in
     modern|legacy) printf '%s' "$VE_LAYOUT"; return 0 ;;
   esac
-  seen=$(sn_ssh "$host" "if [ -d \"\$HOME/${VE_SERVER_DIR#\$HOME/}/cli/servers\" ]; then echo modern;
-    elif [ -d \"\$HOME/${VE_SERVER_DIR#\$HOME/}/bin\" ]; then echo legacy;
-    else echo none; fi" 2>/dev/null | tr -d '\r' | tail -n1)
+  seen=$(sn_ssh "$host" "d=\"\$HOME/${VE_SERVER_DIR#\$HOME/}\"; m=0; l=0
+    [ -d \"\$d/cli/servers\" ] && m=1
+    [ -d \"\$d/bin\" ] && l=1
+    echo \"\$m \$l\"" 2>/dev/null | tr -d '\r' | tail -n1)
   case "$seen" in
-    modern|legacy) printf '%s' "$seen" ;;
+    "1 "*)
+      # A modern tree only ever gets built by a modern client. Strong evidence.
+      printf 'modern' ;;
+    "0 1")
+      # A lone bin/ tree is exactly what an older tool - or an older client,
+      # before a managed update moved it - leaves behind. It says something
+      # once used the legacy layout; it says nothing about what the client
+      # wants now. Treating it as evidence places a server the client will
+      # never look at, which fails silently on first connect. So: default,
+      # and say why, and say how to settle it.
+      VE_LAYOUT_NOTE="only a legacy bin/ tree exists here, which is what a previous tool leaves behind. Using ${VE_LAYOUT_DEFAULT}. To settle it: on the laptop, View > Output > 'Remote - SSH' shows the path the client looks under; or check the setting remote.SSH.useExecServer (true = modern, false = legacy). If it is legacy, set VE_LAYOUT=\"legacy\" and re-run."
+      printf '%s' "$VE_LAYOUT_DEFAULT" ;;
     *) printf '%s' "$VE_LAYOUT_DEFAULT" ;;
   esac
 }
@@ -370,6 +383,10 @@ ve_place_server() {
     return 0
   fi
 
+  if sn_ssh "$dest" "[ -d \"\$HOME/${root#\$HOME/}\" ]" 2>/dev/null; then
+    warn "replacing a server tree at ${root} that sneaker did not place"
+  fi
+
   rel=$(ve_py servers "${VE_STAGE_DIR}/current/MANIFEST.json" "$platform" "$commit" \
         | awk -F'\t' '$1=="server"{print $3}')
   [ -n "$rel" ] || die "the staged bundle carries no ${platform} server for ${commit}"
@@ -467,6 +484,7 @@ ve_install_host() {
   ssh_master "$dest"
   layout=$(ve_detect_layout "$dest")
   info "layout     ${layout}$( [ "$VE_LAYOUT" = auto ] && printf ' (detected)' )"
+  [ -z "${VE_LAYOUT_NOTE:-}" ] || warn "$VE_LAYOUT_NOTE"
 
   group=${HOST_HOME_GROUP[$alias]:-}
   if [ -n "$group" ] && [ -n "${_VE_HOME_DONE[$group]:-}" ]; then
@@ -564,6 +582,50 @@ ve_status() {
 
 ve_sync() { ve_fetch; ve_stage; ve_install; }
 
+# ------------------------------------------------------------------------ clean
+#
+# Starting from a known state is sometimes the only honest move: a host that a
+# previous tool set up, in a layout the current client no longer reads, with a
+# hand-edited extensions.json on top, is not something to reason about. It is
+# something to remove.
+#
+# Two tiers. The default removes every server tree in both layouts and the CLI
+# - the parts Remote-SSH is confused by - and keeps extensions and their
+# settings. --all removes ~/.vscode-server entirely. Both confirm per host by
+# asking for the alias back, because 'y' is too easy to type at the wrong
+# prompt; --yes skips that for a run you have already read the plan for.
+
+ve_clean() {
+  local alias dest reply
+  for alias in $(ve_host_list); do
+    dest=$(ve_host_dest "$alias")
+    hdr "$alias  (${dest})"
+    if [ "$VE_ALL" = 1 ]; then
+      info "removes ${VE_SERVER_DIR} entirely: every server, the CLI, all remote"
+      info "extensions and their settings. Remote-SSH will rebuild from nothing."
+    else
+      info "removes every server tree (both layouts) and the CLI; keeps extensions"
+    fi
+    if [ "$VE_DRY" = 1 ]; then info "dry run, nothing removed"; continue; fi
+    if [ "$VE_YES" != 1 ]; then
+      printf 'type %s to confirm, anything else to skip: ' "$alias" >&2
+      read -r reply </dev/tty || reply=""
+      [ "$reply" = "$alias" ] || { warn "skipped ${alias}"; continue; }
+    fi
+    ssh_master "$dest"
+    if [ "$VE_ALL" = 1 ]; then
+      sn_ssh "$dest" "rm -rf \"\$HOME/${VE_SERVER_DIR#\$HOME/}\"" \
+        || die "could not remove ${VE_SERVER_DIR} on ${dest}"
+      ok "removed ${VE_SERVER_DIR} on ${alias}"
+    else
+      sn_ssh "$dest" "d=\"\$HOME/${VE_SERVER_DIR#\$HOME/}\"
+        rm -rf \"\$d/cli/servers\" \"\$d/bin\" \"\$d\"/code-* \"\$d\"/.*.log \"\$d\"/.*.pid \"\$d\"/.*.token 2>/dev/null; true" \
+        || die "could not remove server trees on ${dest}"
+      ok "removed all server trees and the CLI on ${alias}; extensions kept"
+    fi
+  done
+}
+
 ve_search() {
   local term=${1:-}
   [ -n "$term" ] || die "usage: sneaker vscode-extensions search TERM"
@@ -576,7 +638,7 @@ ve_search() {
 
 # ----------------------------------------------------------------------- args
 
-VE_HOSTS=(); VE_ONLY=""; VE_DRY=0; VE_FORCE=0; VE_BUNDLE=""
+VE_HOSTS=(); VE_ONLY=""; VE_DRY=0; VE_FORCE=0; VE_YES=0; VE_ALL=0; VE_BUNDLE=""
 VE_NO_HEDGE=""; VE_NO_CATALOG=""
 declare -A _VE_HOME_DONE=()
 
@@ -593,6 +655,7 @@ verbs
   install     place servers and install extensions
   probe       read each host's arch, libc and server layout
   status      what each host currently has
+  clean       remove server trees on a host (--all: everything under ~/.vscode-server)
   drift       compare the installed VS Code against what is staged
   search TERM look an extension up in the staged catalogue
 
@@ -605,6 +668,8 @@ options
   --no-catalog      omit the Marketplace index
   --dry-run         print the plan, change nothing
   --force           install despite a commit mismatch
+  --all             clean: remove ~/.vscode-server entirely, extensions included
+  --yes             clean: skip the per-host confirmation
 USAGE
 }
 
@@ -623,6 +688,8 @@ ve_parse_args() {
       --no-catalog) VE_NO_CATALOG=1; shift ;;
       --dry-run)    VE_DRY=1; shift ;;
       --force)      VE_FORCE=1; shift ;;
+      --all)        VE_ALL=1; shift ;;
+      --yes|-y)     VE_YES=1; shift ;;
       -h|--help)    ve_usage; exit 0 ;;
       -*)           die "unknown option: $1" ;;
       *)            VE_ARGS+=("$1"); shift ;;
@@ -646,6 +713,7 @@ ve_main() {
     sync)    ve_sync ;;
     probe)   ve_probe ;;
     status)  ve_status ;;
+    clean)   ve_clean ;;
     drift)   ve_drift ;;
     search)  ve_search ${VE_ARGS[0]+"${VE_ARGS[0]}"} ;;
     -h|--help|help) ve_usage ;;

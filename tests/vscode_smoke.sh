@@ -97,6 +97,24 @@ refused "drift refuses after a managed VS Code update" $?
 "${ROOT}/bin/sneaker" --config "${WORK}/drift.conf" vscode-extensions install >/dev/null 2>&1
 refused "install refuses against a mismatched commit" $?
 
+echo "== clean is gated and dry-runnable =="
+cat > "${WORK}/clean.conf" <<CONF
+VE_STAGE_DIR="${STAGE}"
+VSCODE_VERSION="1.133.0"
+VSCODE_COMMIT="${COMMIT}"
+HOST_ALIAS=( [scratch]="nobody@nowhere.invalid" )
+DEFAULT_HOSTS=( scratch )
+CONF
+out=$("${ROOT}/bin/sneaker" --config "${WORK}/clean.conf" vscode-extensions clean --dry-run 2>&1)
+check "clean --dry-run touches nothing and needs no ssh" $? 0
+printf '%s' "$out" | grep -q 'keeps extensions'
+check "default tier keeps extensions" $? 0
+out=$("${ROOT}/bin/sneaker" --config "${WORK}/clean.conf" vscode-extensions clean --all --dry-run 2>&1)
+printf '%s' "$out" | grep -q 'entirely'
+check "--all tier removes everything" $? 0
+"${ROOT}/bin/sneaker" --config "${WORK}/clean.conf" vscode-extensions clean --bogus >/dev/null 2>&1
+refused "unknown option is refused" $?
+
 echo "== offline catalogue search =="
 out=$(sneaker search yaml 2>&1)
 printf '%s' "$out" | grep -q 'pub.yaml'
