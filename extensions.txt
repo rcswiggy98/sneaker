@@ -1,0 +1,52 @@
+# sneaker / vscode-extensions - the pinned input you review.
+#
+# One extension per line as the Marketplace identity, publisher.name:
+#
+#     ms-vscode-remote.remote-ssh
+#
+# The publisher half is the part that carries the risk. There is no owner/repo
+# here to review the way there is for an Obsidian plugin: a VSIX is minified
+# JavaScript that runs in the extension host with Node privileges, and for most
+# extensions the Marketplace listing is the only surface you get. The id is also
+# the only thing separating a real extension from a lookalike with a plausible
+# publisher name, so read it character by character before it enters this file.
+#
+# extensions.lock records the Marketplace GUIDs for the extension and its
+# publisher the first time a line is resolved, and the fetcher refuses to
+# continue if either changes afterwards. A publisher name can be re-registered;
+# the GUID behind it cannot.
+#
+# Pin a version by appending @, as in plugins.txt:
+#
+#     ms-vscode.cpptools@1.34.4
+#
+# Unpinned lines resolve to the newest version whose engines.vscode constraint
+# admits the VS Code you actually run, which is read from `code --version`
+# rather than configured. Remote-SSH is versioned in lockstep with VS Code and
+# will move every time IT updates the managed install; most other extensions
+# will not.
+#
+# Where an extension installs is derived from its ExtensionKind: `ui` goes to
+# the laptop, `workspace` goes to the target hosts. That is right often enough
+# to be the default and wrong often enough to need an override:
+#
+#     on=local            the laptop only
+#     on=remote           every target host in the run
+#     on=devbox01,lab01   these targets only
+#
+# Use it to keep something large off hosts that do not need it, not to move an
+# extension to a side it was not built for.
+#
+# Pre-release versions are excluded. They sort ahead of stable releases and are
+# not otherwise distinguished, so the newest build of an extension is often one.
+# Opt in per line, never globally:
+#
+#     ms-vscode-remote.remote-ssh  pre
+#
+# Extension packs and dependencies are resolved but never fetched implicitly.
+# If a line requires something absent from this file the fetch stops and names
+# what to add. Nothing crosses that you did not put here yourself.
+
+ms-vscode-remote.remote-ssh
+ms-vscode-remote.remote-ssh-edit
+ms-vscode.remote-explorer

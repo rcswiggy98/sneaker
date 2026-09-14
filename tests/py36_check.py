@@ -6,7 +6,9 @@ import ast
 import re
 import sys
 
-TARGETS = ["bastion/fetch-obsidian-plugins.py", "lib/vaultinfo.py"]
+TARGETS = ["bastion/fetch-obsidian-plugins.py", "lib/vaultinfo.py",
+           "bastion/fetch-vscode-extensions.py", "lib/vscodeinfo.py",
+           "tests/make_vscode_fixture.py"]
 
 NEW_KWARGS = {"capture_output", "text", "encoding_errors"}
 NEW_MODULES = {"dataclasses", "contextvars", "importlib.resources",

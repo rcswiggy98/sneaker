@@ -8,8 +8,11 @@ for f in bin/sneaker lib/*.sh tests/*.sh; do
 done
 echo "== python 3.6 compatibility =="
 python3 tests/py36_check.py || rc=1
+echo "== vscode resolution rules =="
+python3 tests/vscode_resolve_test.py || rc=1
 echo "== filesystem layer =="
 ./tests/fs_test.sh || rc=1
 echo "== end to end =="
 ./tests/smoke.sh || rc=1
+./tests/vscode_smoke.sh || rc=1
 exit $rc
