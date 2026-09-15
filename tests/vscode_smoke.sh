@@ -79,6 +79,60 @@ check "modern layout places a CLI" "$got" '$HOME/.vscode-server/code-deadbeef'
 got=$(layout 've_cli_dest legacy deadbeef')
 check "legacy layout has no separate CLI" "$got" ''
 
+echo "== multi-host fan-out =="
+# Every other check in this file runs with zero or one host, which is how a
+# missing newline in ve_host_platform survived: it only concatenates from the
+# second host onward.
+multi() {
+  bash -c '
+    SNEAKER_LIB='"${ROOT}"'/lib
+    . "$SNEAKER_LIB/common.sh"
+    declare -A HOST_ALIAS=([a]="u@a" [b]="u@b" [c]="u@c")
+    declare -A HOST_PLATFORM=([a]="linux-x64" [b]="linux-x64" [c]="linux-arm64")
+    declare -A HOST_HOME_GROUP=([a]="nfs" [b]="nfs")
+    declare -a DEFAULT_HOSTS=(a b c); declare -a EXTRA_PLATFORMS=()
+    VE_HOSTS=(); VE_SERVER_DIR=x; VE_LAYOUT=auto; VE_LAYOUT_DEFAULT=modern
+    . "$SNEAKER_LIB/vscode-extensions.sh"
+    '"$1"''
+}
+got=$(multi 've_platform_union | wc -l')
+check "one platform per line, not concatenated" "$got" 3
+got=$(multi 've_platform_union | sort -u | paste -sd, -')
+check "the union the fetcher receives is deduped" "$got" "linux-arm64,linux-x64"
+got=$(multi 've_host_list | wc -l')
+check "every configured host is listed" "$got" 3
+got=$(multi 'VE_HOSTS=(b); ve_platform_union | paste -sd, -')
+check "--host narrows the union" "$got" "linux-x64"
+got=$(multi 'EXTRA_PLATFORMS=(win32-arm64); ve_platform_union | sort -u | paste -sd, -')
+check "EXTRA_PLATFORMS joins the union" "$got" "linux-arm64,linux-x64,win32-arm64"
+got=$(multi 've_host_dest b')
+check "host dest resolves through the alias map" "$got" "u@b"
+
+echo "== a platform typo is caught before the bastion trip =="
+multi 'HOST_PLATFORM[c]="Linux-X64"; ve_platform_union' >/dev/null 2>&1
+refused "a bad HOST_PLATFORM value is refused" $?
+out=$(multi 'HOST_PLATFORM[c]="Linux-X64"; ve_platform_union' 2>&1)
+printf '%s' "$out" | grep -q 'HOST_PLATFORM\[c\]'
+check "the message names which host is wrong" $? 0
+multi 'EXTRA_PLATFORMS=(linux-x86); ve_platform_union' >/dev/null 2>&1
+refused "a bad EXTRA_PLATFORMS value is refused" $?
+multi 'unset "HOST_PLATFORM[c]"; ve_platform_union' >/dev/null 2>&1
+refused "a host with no recorded platform is refused" $?
+
+echo "== the client's own footprint decides the layout =="
+decide() { layout "ve_layout_decide $1; printf '%s' \"\$VE_LAYOUT_DETECTED\""; }
+#              mc lc ma la
+got=$(decide "0 1 0 1"); check "bin/<commit> the client built for the commit in use means legacy" "$got" legacy
+got=$(decide "0 1 1 1"); check "...even when an old modern tree also exists" "$got" legacy
+got=$(decide "1 0 1 1"); check "cli/servers/<commit> the client built means modern" "$got" modern
+got=$(decide "0 0 1 1"); check "a modern tree for other commits means modern" "$got" modern
+got=$(decide "0 0 0 1"); check "a legacy tree for other commits alone is residue: default" "$got" modern
+got=$(decide "0 0 0 0"); check "nothing on the host: default" "$got" modern
+got=$(layout "ve_layout_decide 0 0 0 1; printf '%s' \"\$VE_LAYOUT_NOTE\"" | grep -c "left behind")
+check "residue is explained, not silently defaulted" "$got" 1
+got=$(layout "VE_LAYOUT=legacy; ve_detect_layout unused-host x; printf '%s' \"\$VE_LAYOUT_DETECTED\"")
+check "an explicit VE_LAYOUT wins without touching the host" "$got" legacy
+
 echo "== an invalid layout is refused rather than guessed at =="
 sneaker stage --layout sideways >/dev/null 2>&1
 refused "reject --layout sideways" $?
