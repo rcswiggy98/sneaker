@@ -119,6 +119,43 @@ refused "a bad EXTRA_PLATFORMS value is refused" $?
 multi 'unset "HOST_PLATFORM[c]"; ve_platform_union' >/dev/null 2>&1
 refused "a host with no recorded platform is refused" $?
 
+echo "== a loop body that reads stdin cannot end the loop =="
+# ssh forwards stdin to the remote command. In a `while read ... done < <(...)`
+# loop that stdin IS the loop's input, so the first ssh drains it and the loop
+# quits after one iteration - one extension installed, one host visited, no
+# error. `cat` stands in for ssh below: it drains stdin the same way.
+#
+# Note both halves of the fix are load-bearing, and they do different jobs. A
+# dedicated descriptor stops the body draining the ITERATION; only -n stops the
+# body reading the terminal and blocking. Writing this test without the second
+# half hung it, which is the same failure a user would hit.
+loopcount() { bash -c "$1" </dev/null; }
+
+got=$(loopcount '''n=0
+  while IFS= read -r x; do n=$((n+1)); cat >/dev/null; done < <(printf "a\nb\nc\n")
+  printf "%s" "$n"''')
+check "the broken shape stops after one iteration" "$got" 1
+
+got=$(loopcount '''n=0
+  while IFS= read -r x; do n=$((n+1)); cat </dev/null >/dev/null; done < <(printf "a\nb\nc\n")
+  printf "%s" "$n"''')
+check "giving the body its own stdin (ssh -n) fixes it" "$got" 3
+
+got=$(loopcount '''n=0
+  while IFS= read -r x <&3; do n=$((n+1)); cat </dev/null >/dev/null; done 3< <(printf "a\nb\nc\n")
+  printf "%s" "$n"''')
+check "reading from a dedicated fd survives it too" "$got" 3
+
+# And the real thing: no loop that drives a remote command may read plain
+# stdin, and the domain must never use the ssh wrapper that forwards it.
+got=$(grep -cE '''^[[:space:]]*done < <\(''' "${ROOT}/lib/vscode-extensions.sh")
+check "every generated-input loop uses its own descriptor" "$got" 1   # the tar audit, which runs nothing remote
+got=$(grep -vE '^[[:space:]]*#' "${ROOT}/lib/vscode-extensions.sh" \
+      | grep -cE '''(^|[^_[:alnum:]])sn_ssh ''' || true)
+check "the domain never uses the stdin-forwarding ssh wrapper" "$got" 0
+grep -q '''ssh -n \$(ssh_opts)''' "${ROOT}/lib/vscode-extensions.sh"
+check "its own ssh wrapper passes -n" $? 0
+
 echo "== the commit is carried, not clobbered, through server placement =="
 # ve_install_host read the staged-commit list into $commit, the same variable
 # holding the commit VS Code runs. At EOF read empties it, and the extension

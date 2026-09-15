@@ -12,6 +12,16 @@
 
 VE_BUNDLE_ROOT="sneaker-vscode-extensions"
 
+# ssh reads stdin and forwards it to the remote command. Inside a loop fed by
+# `done < <(...)` that stdin IS the loop's input, so the first ssh drains it
+# and the loop ends after one iteration - one extension installed, one host
+# visited, no error. -n gives ssh /dev/null instead.
+#
+# Every remote call in this domain runs a command and pipes nothing in, so -n
+# is always right here. sn_ssh remains for callers that do pipe (the obsidian
+# domain streams a tar into it); using it in a loop would reintroduce this.
+ve_ssh() { local host=$1; shift; ssh -n $(ssh_opts) "$host" "$@"; }
+
 # A run here is fetch, read the plan, then install, with hundred-megabyte
 # transfers in between. The obsidian default of 180s covers back-to-back
 # commands but expires in the gap where you are reading, and the cost of that
@@ -105,7 +115,7 @@ ve_detect_layout() {  # host commit -> sets VE_LAYOUT_DETECTED, VE_LAYOUT_NOTE
   case "$VE_LAYOUT" in
     modern|legacy) VE_LAYOUT_DETECTED=$VE_LAYOUT; return 0 ;;
   esac
-  facts=$(sn_ssh "$host" "d=\"\$HOME/${VE_SERVER_DIR#\$HOME/}\"; mc=0; lc=0; ma=0; la=0
+  facts=$(ve_ssh "$host" "d=\"\$HOME/${VE_SERVER_DIR#\$HOME/}\"; mc=0; lc=0; ma=0; la=0
     [ -d \"\$d/cli/servers/Stable-${commit}\" ] && [ ! -f \"\$d/cli/servers/Stable-${commit}/server/.sneaker-complete\" ] && mc=1
     [ -d \"\$d/bin/${commit}\" ] && [ ! -f \"\$d/bin/${commit}/.sneaker-complete\" ] && lc=1
     [ -d \"\$d/cli/servers\" ] && ma=1
@@ -160,12 +170,12 @@ ve_check_platform() {  # platform source-description
 
 ve_platform_union() {
   local h p
-  while IFS= read -r h; do
+  while IFS= read -r h <&3; do
     [ -n "$h" ] || continue
     p=$(ve_host_platform "$h") || exit 1
     ve_check_platform "$p" "HOST_PLATFORM[${h}]"
     printf '%s\n' "$p"
-  done < <(ve_host_list)
+  done 3< <(ve_host_list)
   for p in ${EXTRA_PLATFORMS[@]+"${EXTRA_PLATFORMS[@]}"}; do
     [ -n "$p" ] || continue
     ve_check_platform "$p" "EXTRA_PLATFORMS"
@@ -294,7 +304,7 @@ ve_fetch() {
 
   ssh_master "$BASTION"
   info "pushing the fetcher to ${BASTION}"
-  sn_ssh "$BASTION" "mkdir -p ${BASTION_WORKDIR}" \
+  ve_ssh "$BASTION" "mkdir -p ${BASTION_WORKDIR}" \
     || die "could not create ${BASTION_WORKDIR} on ${BASTION}"
   sn_scp "${SNEAKER_ROOT}/bastion/fetch-vscode-extensions.py" \
          "${BASTION}:${BASTION_WORKDIR}/fetch-vscode-extensions.py" \
@@ -306,7 +316,7 @@ ve_fetch() {
       || warn "could not push extensions.lock; identity pinning is skipped this run"
   fi
 
-  local out; out=$(sn_ssh "$BASTION" "python3 ${BASTION_WORKDIR}/fetch-vscode-extensions.py \
+  local out; out=$(ve_ssh "$BASTION" "python3 ${BASTION_WORKDIR}/fetch-vscode-extensions.py \
       --out ${BASTION_WORKDIR}/bundles \
       --workdir ${BASTION_WORKDIR}/cache \
       --extensions ${BASTION_WORKDIR}/extensions.txt \
@@ -415,12 +425,12 @@ ve_staged_or_die() {
 
 ve_probe() {
   local alias dest out arch libc glibc layout commits selfinstall
-  while IFS= read -r alias; do
+  while IFS= read -r alias <&3; do
     [ -n "$alias" ] || continue
     dest=$(ve_host_dest "$alias")
     hdr "$alias  (${dest})"
     ssh_master "$dest"
-    out=$(sn_ssh "$dest" '
+    out=$(ve_ssh "$dest" '
       printf "arch\t%s\n" "$(uname -m)"
       if [ -f /etc/alpine-release ]; then printf "libc\tmusl\n"
       elif ldd --version 2>&1 | head -n1 | grep -qi musl; then printf "libc\tmusl\n"
@@ -477,7 +487,7 @@ ve_probe() {
     if [ "$plat" = linux-armhf ]; then
       err "no VS Code Server is published for armhf; this host cannot run Remote-SSH"
     fi
-  done < <(ve_host_list)
+  done 3< <(ve_host_list)
 }
 
 # -------------------------------------------------------------------- install
@@ -496,12 +506,12 @@ ve_place_server() {
 
   root=$(ve_server_root "$layout" "$commit")
   marker="${root}/.sneaker-complete"
-  if sn_ssh "$dest" "[ -f \"\$HOME/${marker#\$HOME/}\" ]" 2>/dev/null; then
+  if ve_ssh "$dest" "[ -f \"\$HOME/${marker#\$HOME/}\" ]" 2>/dev/null; then
     ok "server ${commit:0:12} already placed (${layout})"
     return 0
   fi
 
-  if sn_ssh "$dest" "[ -d \"\$HOME/${root#\$HOME/}\" ]" 2>/dev/null; then
+  if ve_ssh "$dest" "[ -d \"\$HOME/${root#\$HOME/}\" ]" 2>/dev/null; then
     warn "replacing a server tree at ${root} that sneaker did not place"
   fi
 
@@ -511,18 +521,18 @@ ve_place_server() {
   sha=$(ve_sha_of_staged "$rel")
 
   remote_tmp="${VE_REMOTE_TMP}/$$"
-  sn_ssh "$dest" "mkdir -p ${remote_tmp}" || die "could not create ${remote_tmp} on ${dest}"
+  ve_ssh "$dest" "mkdir -p ${remote_tmp}" || die "could not create ${remote_tmp} on ${dest}"
   info "pushing ${platform} server for ${commit:0:12}"
   sn_scp "${VE_STAGE_DIR}/current/${rel}" "${dest}:${remote_tmp}/server.tar.gz" \
     || die "could not push the server tarball"
 
   # Verified again after being written: a filesystem or tool that alters bytes
   # in transit fails loudly here rather than as a broken server later.
-  sn_ssh "$dest" "cd ${remote_tmp} && printf '%s  server.tar.gz\n' $(printf '%q' "$sha") | sha256sum -c -" \
+  ve_ssh "$dest" "cd ${remote_tmp} && printf '%s  server.tar.gz\n' $(printf '%q' "$sha") | sha256sum -c -" \
     >/dev/null 2>&1 || die "server tarball corrupted in transit to ${dest}"
   ok "server tarball verified on ${dest}"
 
-  sn_ssh "$dest" "set -e
+  ve_ssh "$dest" "set -e
     root=\"\$HOME/${root#\$HOME/}\"
     rm -rf \"\$root\" \"\${root}.new\"
     mkdir -p \"\${root}.new\"
@@ -542,9 +552,9 @@ ve_place_server() {
       sha=$(ve_sha_of_staged "$rel")
       sn_scp "${VE_STAGE_DIR}/current/${rel}" "${dest}:${remote_tmp}/cli.tar.gz" \
         || die "could not push the CLI tarball"
-      sn_ssh "$dest" "cd ${remote_tmp} && printf '%s  cli.tar.gz\n' $(printf '%q' "$sha") | sha256sum -c -" \
+      ve_ssh "$dest" "cd ${remote_tmp} && printf '%s  cli.tar.gz\n' $(printf '%q' "$sha") | sha256sum -c -" \
         >/dev/null 2>&1 || die "CLI tarball corrupted in transit to ${dest}"
-      sn_ssh "$dest" "set -e
+      ve_ssh "$dest" "set -e
         mkdir -p ${remote_tmp}/cli
         tar -xzf ${remote_tmp}/cli.tar.gz -C ${remote_tmp}/cli
         mkdir -p \"\$(dirname \"\$HOME/${cli#\$HOME/}\")\"
@@ -557,7 +567,7 @@ ve_place_server() {
       warn "no CLI build staged for ${platform} ${commit:0:12}"
     fi
   fi
-  sn_ssh "$dest" "rmdir ${remote_tmp} 2>/dev/null || true" >/dev/null 2>&1
+  ve_ssh "$dest" "rmdir ${remote_tmp} 2>/dev/null || true" >/dev/null 2>&1
 }
 
 ve_install_remote_extensions() {
@@ -568,11 +578,11 @@ ve_install_remote_extensions() {
   server_bin="${root}/bin/code-server"
   remote_tmp="${VE_REMOTE_TMP}/$$"
 
-  sn_ssh "$dest" "[ -x \"\$HOME/${server_bin#\$HOME/}\" ]" 2>/dev/null \
+  ve_ssh "$dest" "[ -x \"\$HOME/${server_bin#\$HOME/}\" ]" 2>/dev/null \
     || die "no code-server at $(ve_display_path "$server_bin") on ${dest}; \
 the ${layout} server for ${commit:0:12} was not placed"
 
-  while IFS=$'\t' read -r id version _plat rel sha _engine _eid _pid; do
+  while IFS=$'\t' read -r id version _plat rel sha _engine _eid _pid <&4; do
     [ -n "$id" ] || continue
     if [ -n "$VE_ONLY" ] && ! printf '%s' ",${VE_ONLY}," | grep -q ",${id},"; then
       continue
@@ -580,19 +590,19 @@ the ${layout} server for ${commit:0:12} was not placed"
     if [ "$VE_DRY" = 1 ]; then
       info "would install ${id} ${version} on ${alias}"; n=$((n+1)); continue
     fi
-    sn_ssh "$dest" "mkdir -p ${remote_tmp}" || die "could not create ${remote_tmp}"
+    ve_ssh "$dest" "mkdir -p ${remote_tmp}" || die "could not create ${remote_tmp}"
     sn_scp "${VE_STAGE_DIR}/current/${rel}" "${dest}:${remote_tmp}/ext.vsix" \
       || die "could not push ${id}"
-    sn_ssh "$dest" "cd ${remote_tmp} && printf '%s  ext.vsix\n' $(printf '%q' "$sha") | sha256sum -c -" \
+    ve_ssh "$dest" "cd ${remote_tmp} && printf '%s  ext.vsix\n' $(printf '%q' "$sha") | sha256sum -c -" \
       >/dev/null 2>&1 || die "${id} corrupted in transit to ${dest}"
-    sn_ssh "$dest" "\"\$HOME/${server_bin#\$HOME/}\" --install-extension ${remote_tmp}/ext.vsix \
+    ve_ssh "$dest" "\"\$HOME/${server_bin#\$HOME/}\" --install-extension ${remote_tmp}/ext.vsix \
         --extensions-dir \"\$HOME/${VE_SERVER_DIR#\$HOME/}/extensions\" --force >/dev/null &&
       rm -f ${remote_tmp}/ext.vsix" \
       || die "code-server refused ${id} on ${dest}"
     ok "${id} ${version}"
     ve_lock_append "$alias" "$id" "$version" "$platform"
     n=$((n+1))
-  done < <(ve_py extensions "${VE_STAGE_DIR}/current/MANIFEST.json" remote "$platform")
+  done 4< <(ve_py extensions "${VE_STAGE_DIR}/current/MANIFEST.json" remote "$platform")
   [ "$n" -gt 0 ] || info "no remote extensions for ${platform}"
 }
 
@@ -618,11 +628,11 @@ ve_install_host() {
     # installed one and the hedge), while extensions install against the one
     # VS Code is actually running. Reading into $commit here emptied it at
     # EOF, and the install then looked for code-server under bin//bin.
-    while IFS=$'\t' read -r staged_commit _version _role; do
+    while IFS=$'\t' read -r staged_commit _version _role <&4; do
       [ -n "$staged_commit" ] || continue
       [ "$VE_DRY" = 1 ] && { info "would place server ${staged_commit:0:12}"; continue; }
       ve_place_server "$dest" "$layout" "$staged_commit" "$platform"
-    done < <(ve_py commits "${VE_STAGE_DIR}/current/MANIFEST.json" "$platform")
+    done 4< <(ve_py commits "${VE_STAGE_DIR}/current/MANIFEST.json" "$platform")
     [ -n "$group" ] && _VE_HOME_DONE[$group]=$alias
   fi
 
@@ -634,7 +644,7 @@ ve_install_local() {
   ve_code --version >/dev/null 2>&1 \
     || { warn "no VS Code CLI found; skipping local extensions"; return 0; }
   hdr "laptop  ($(ve_client_platform))"
-  while IFS=$'\t' read -r id version _plat rel sha _engine _eid _pid; do
+  while IFS=$'\t' read -r id version _plat rel sha _engine _eid _pid <&4; do
     [ -n "$id" ] || continue
     if [ -n "$VE_ONLY" ] && ! printf '%s' ",${VE_ONLY}," | grep -q ",${id},"; then
       continue
@@ -649,7 +659,7 @@ ve_install_local() {
       cp "$src" "$tmp" || die "could not copy ${id} to the Windows side"
       arg=$(wslpath -w "$tmp")
     fi
-    out=$(ve_code --install-extension "$arg" --force 2>&1); rc=$?
+    out=$(ve_code --install-extension "$arg" --force </dev/null 2>&1); rc=$?
     [ -n "$tmp" ] && rm -f "$tmp"
     if [ "$rc" -ne 0 ]; then
       printf '%s\n' "$out" | sed -e 's/^/    /' >&2
@@ -658,13 +668,13 @@ ve_install_local() {
     # Verified after being written. code reports success from states in
     # which nothing was installed, and a ui extension that is not actually on
     # the laptop is the one thing this domain exists to put there.
-    ve_code --list-extensions 2>/dev/null | grep -qix "$id" \
+    ve_code --list-extensions </dev/null 2>/dev/null | grep -qix "$id" \
       || die "${id}: code reported success but does not list it afterwards. \
 If VS Code is running, quit it fully and re-run; see docs/first-run.md 7b."
     ok "${id} ${version}"
     ve_lock_append laptop "$id" "$version" "$(ve_client_platform)"
     n=$((n+1))
-  done < <(ve_py extensions "${VE_STAGE_DIR}/current/MANIFEST.json" local "$(ve_client_platform)")
+  done 4< <(ve_py extensions "${VE_STAGE_DIR}/current/MANIFEST.json" local "$(ve_client_platform)")
   [ "$n" -gt 0 ] || info "no local extensions staged"
 }
 
@@ -697,9 +707,9 @@ ve_install() {
   fi
   ve_install_local
   local alias
-  while IFS= read -r alias; do
+  while IFS= read -r alias <&3; do
     [ -n "$alias" ] && ve_install_host "$alias"
-  done < <(ve_host_list)
+  done 3< <(ve_host_list)
 }
 
 ve_status() {
@@ -715,12 +725,12 @@ ve_status() {
     | awk 'NF{print $1}' | sed -e 's/@.*//' | tr 'A-Z' 'a-z')
 
   local alias dest line kind value
-  while IFS= read -r alias; do
+  while IFS= read -r alias <&3; do
     [ -n "$alias" ] || continue
     dest=$(ve_host_dest "$alias")
     hdr "$alias  (${dest})"
     ssh_master "$dest"
-    while IFS=$'\t' read -r kind value; do
+    while IFS=$'\t' read -r kind value <&4; do
       case "$kind" in
         none)   info "no ${VE_SERVER_DIR}" ;;
         server) info "server     ${value}" ;;
@@ -731,7 +741,7 @@ ve_status() {
             warn "extension  ${value}   not in extensions.txt"
           fi ;;
       esac
-    done < <(sn_ssh "$dest" '
+    done 4< <(ve_ssh "$dest" '
       d="$HOME/.vscode-server"
       [ -d "$d" ] || { printf "none\t\n"; exit 0; }
       for p in "$d"/cli/servers/Stable-* "$d"/bin/*; do
@@ -749,7 +759,7 @@ ve_status() {
       ls -1 "$d/extensions" 2>/dev/null | grep -v "^\." | grep -v "^extensions.json$" \
         | sed -E "s/-[0-9]+\.[0-9]+\.[0-9]+.*$//" | sort -u \
         | while read -r e; do printf "ext\t%s\n" "$e"; done' 2>/dev/null | tr -d '\r')
-  done < <(ve_host_list)
+  done 3< <(ve_host_list)
 }
 
 ve_sync() { ve_fetch; ve_stage; ve_install; }
@@ -769,7 +779,7 @@ ve_sync() { ve_fetch; ve_stage; ve_install; }
 
 ve_clean() {
   local alias dest reply
-  while IFS= read -r alias; do
+  while IFS= read -r alias <&3; do
     [ -n "$alias" ] || continue
     dest=$(ve_host_dest "$alias")
     hdr "$alias  (${dest})"
@@ -787,16 +797,16 @@ ve_clean() {
     fi
     ssh_master "$dest"
     if [ "$VE_ALL" = 1 ]; then
-      sn_ssh "$dest" "rm -rf \"\$HOME/${VE_SERVER_DIR#\$HOME/}\"" \
+      ve_ssh "$dest" "rm -rf \"\$HOME/${VE_SERVER_DIR#\$HOME/}\"" \
         || die "could not remove ${VE_SERVER_DIR} on ${dest}"
       ok "removed ${VE_SERVER_DIR} on ${alias}"
     else
-      sn_ssh "$dest" "d=\"\$HOME/${VE_SERVER_DIR#\$HOME/}\"
+      ve_ssh "$dest" "d=\"\$HOME/${VE_SERVER_DIR#\$HOME/}\"
         rm -rf \"\$d/cli/servers\" \"\$d/bin\" \"\$d\"/code-* \"\$d\"/.*.log \"\$d\"/.*.pid \"\$d\"/.*.token 2>/dev/null; true" \
         || die "could not remove server trees on ${dest}"
       ok "removed all server trees and the CLI on ${alias}; extensions kept"
     fi
-  done < <(ve_host_list)
+  done 3< <(ve_host_list)
 }
 
 ve_search() {
