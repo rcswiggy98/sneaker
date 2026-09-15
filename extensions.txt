@@ -46,6 +46,12 @@
 # Extension packs and dependencies are resolved but never fetched implicitly.
 # If a line requires something absent from this file the fetch stops and names
 # what to add. Nothing crosses that you did not put here yourself.
+#
+# One exception, and it is not a loophole: dependencies on the publisher
+# "vscode" - vscode.powershell, vscode.git - are VS Code's own bundled
+# extensions. They ship inside the product, are not on the Marketplace, and
+# nothing can stage them. They are reported and skipped rather than demanded,
+# and a vscode.* line here is refused, because it could never be fetched.
 
 ms-vscode-remote.remote-ssh
 ms-vscode-remote.remote-ssh-edit

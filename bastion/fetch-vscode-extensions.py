@@ -69,6 +69,15 @@ P_PACK = "Microsoft.VisualStudio.Code.ExtensionPack"
 P_DEPS = "Microsoft.VisualStudio.Code.ExtensionDependencies"
 P_PRERELEASE = "Microsoft.VisualStudio.Code.PreRelease"
 
+# VS Code's own bundled extensions are published under the reserved publisher
+# "vscode" - vscode.git, vscode.powershell, vscode.json. They ship inside the
+# product, they are not on the Marketplace (a query for any of them returns
+# nothing), and an extension that depends on one does not need it staged:
+# ms-vscode.powershell declares vscode.powershell and installs without it.
+# Demanding one be added to extensions.txt is a dead end, since adding it only
+# produces "not found on the Marketplace" on the next run.
+BUILTIN_PUBLISHER = "vscode"
+
 # The id becomes a path component in the bundle and on the receiving side, so
 # it is validated rather than trusted. Publisher names are alphanumeric with
 # hyphens; extension names additionally allow dots and underscores.
@@ -405,6 +414,11 @@ def parse_extensions_text(text):
         if not ID_RE.match(ident):
             raise Fail("extensions line %d is not publisher.name: %r"
                        % (lineno, raw.strip()))
+        if is_builtin(ident):
+            raise Fail("extensions line %d: %s is built into VS Code. The "
+                       "publisher 'vscode' is the product's own, is not on the "
+                       "Marketplace, and needs no staging - remove the line."
+                       % (lineno, ident))
         if ident.lower() in seen:
             raise Fail("extensions line %d: %s already listed on line %d"
                        % (lineno, ident, seen[ident.lower()]))
@@ -598,6 +612,11 @@ def verify_vsix(path, ident, expect_version):
 
 def split_ids(value):
     return [s.strip() for s in (value or "").split(",") if s.strip()]
+
+
+def is_builtin(ident):
+    """Does this id name an extension bundled with VS Code itself?"""
+    return ident.split(".", 1)[0].lower() == BUILTIN_PUBLISHER
 
 
 # ------------------------------------------------------------------- servers
@@ -871,6 +890,7 @@ def main(argv):
     records = []
     listed = set(s["id"].lower() for s in specs)
     required_by = {}
+    builtin_by = {}
 
     try:
         # --- resolve everything before downloading anything ------------------
@@ -912,6 +932,9 @@ def main(argv):
                 per_platform[platform] = (version, props)
                 kinds.update(split_ids(props.get(P_KIND)))
                 for dep in split_ids(props.get(P_PACK)) + split_ids(props.get(P_DEPS)):
+                    if is_builtin(dep):
+                        builtin_by.setdefault(dep.lower(), set()).add(ident)
+                        continue
                     required_by.setdefault(dep.lower(), set()).add(ident)
 
             kinds = kinds or set(["workspace"])
@@ -924,6 +947,9 @@ def main(argv):
                              "publisher": pub})
 
         # --- packs and dependencies are resolved, never fetched implicitly ---
+        for dep in sorted(builtin_by):
+            emit("  %s is built into VS Code; required by %s, nothing to stage"
+                 % (dep, ", ".join(sorted(builtin_by[dep]))))
         missing = sorted(dep for dep in required_by if dep not in listed)
         if missing:
             lines = []
@@ -1092,6 +1118,8 @@ def main(argv):
             "extensions": records,
             "servers": servers,
             "catalog_entries": catalog_entries,
+            "builtin_dependencies": dict(
+                (dep, sorted(builtin_by[dep])) for dep in sorted(builtin_by)),
             "warnings": warnings,
         }
         man_path = os.path.join(stage_root, "MANIFEST.json")

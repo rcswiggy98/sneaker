@@ -202,6 +202,28 @@ def t_parse():
 check("extensions.txt parsing", t_parse)
 
 
+# ------------------------------------------------------- built-in dependencies
+
+def t_builtin():
+    """VS Code's own bundled extensions use the reserved publisher "vscode".
+    They are not on the Marketplace, so requiring one to be listed is a dead
+    end: adding the line only fails differently on the next run."""
+    assert F.is_builtin("vscode.powershell")
+    assert F.is_builtin("vscode.git")
+    assert F.is_builtin("VSCode.Json")
+    assert not F.is_builtin("ms-vscode.powershell")
+    assert not F.is_builtin("ms-vscode-remote.remote-ssh")
+    # Bundled in the server but published under a real publisher, so it is
+    # staged like anything else rather than assumed present.
+    assert not F.is_builtin("ms-vscode.js-debug")
+
+    raises(lambda: F.parse_extensions_text("vscode.powershell\n"),
+           "is built into VS Code")
+
+
+check("built-in dependencies are recognised, and refused as pins", t_builtin)
+
+
 # --------------------------------------------------------- asset host list
 
 def t_urls():
