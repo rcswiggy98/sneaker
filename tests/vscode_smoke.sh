@@ -119,6 +119,31 @@ refused "a bad EXTRA_PLATFORMS value is refused" $?
 multi 'unset "HOST_PLATFORM[c]"; ve_platform_union' >/dev/null 2>&1
 refused "a host with no recorded platform is refused" $?
 
+echo "== the commit is carried, not clobbered, through server placement =="
+# ve_install_host read the staged-commit list into $commit, the same variable
+# holding the commit VS Code runs. At EOF read empties it, and the extension
+# install then looked under .vscode-server/bin//bin/code-server - which reads
+# as a quoting fault rather than an empty variable.
+got=$(layout 'printf "%s" "$(ve_server_root legacy "")"')
+check "an empty commit would build a bin// path" "$got" '$HOME/.vscode-server/bin/'
+layout 've_require_commit "" "somewhere"' >/dev/null 2>&1
+refused "an empty commit is refused at the point of use" $?
+out=$(layout 've_require_commit "" "extension install on lab01"' 2>&1)
+printf '%s' "$out" | grep -q 'extension install on lab01'
+check "the refusal names where it came from" $? 0
+layout 've_require_commit abc123 "somewhere"' >/dev/null 2>&1
+check "a real commit passes" $? 0
+got=$(layout 'c=deadbeef
+  while IFS=$'"'"'\t'"'"' read -r staged_commit _v _r; do :; done < <(printf "aaa\tv\tr\nbbb\tv\tr\n")
+  printf "%s" "$c"')
+check "iterating staged commits leaves the running commit intact" "$got" deadbeef
+
+echo "== remote paths print readably =="
+got=$(layout 've_display_path "$(ve_server_root modern abc123)"')
+check "the literal \$HOME is shown as ~" "$got" '~/.vscode-server/cli/servers/Stable-abc123/server'
+got=$(layout 've_display_path "/opt/vscode-server/bin/x"')
+check "a path without \$HOME is unchanged" "$got" '/opt/vscode-server/bin/x'
+
 echo "== the client's own footprint decides the layout =="
 decide() { layout "ve_layout_decide $1; printf '%s' \"\$VE_LAYOUT_DETECTED\""; }
 #              mc lc ma la

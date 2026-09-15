@@ -33,6 +33,25 @@ SNEAKER_CONTROL_PERSIST=${VE_CONTROL_PERSIST:-1800}
 # with neither gets VE_LAYOUT_DEFAULT, which is modern because current VS Code
 # bootstraps that way.
 
+# Remote paths are built with a literal $HOME so the remote shell expands them,
+# not ours. Printed raw that looks like a failed substitution, so messages show
+# the ~ form instead.
+# The replacement half of ${var/pat/repl} is tilde-expanded by bash, so a bare
+# ~ here becomes the LOCAL home - actively misleading when the remote user is
+# someone else. Going through a variable suppresses that.
+ve_display_path() {
+  local tilde='~'
+  printf '%s' "${1/#\$HOME\//${tilde}/}"
+}
+
+# Every remote path is keyed to a commit. An empty one silently produces
+# .vscode-server/bin//bin/code-server and a "not found" that reads as a quoting
+# fault, so it is refused at the point of use instead.
+ve_require_commit() {  # commit context
+  [ -n "${1:-}" ] || die "internal: no commit for ${2}. The staged MANIFEST.json \
+may be unreadable - re-run stage."
+}
+
 ve_server_root() {  # layout commit
   case "$1" in
     legacy) printf '%s/bin/%s' "$VE_SERVER_DIR" "$2" ;;
@@ -473,6 +492,7 @@ ve_sha_of_staged() {  # relative path inside the staged payload
 ve_place_server() {
   local dest=$1 layout=$2 commit=$3 platform=$4
   local root cli marker rel sha remote_tmp
+  ve_require_commit "$commit" "server placement on ${dest}"
 
   root=$(ve_server_root "$layout" "$commit")
   marker="${root}/.sneaker-complete"
@@ -512,7 +532,7 @@ ve_place_server() {
     touch \"\${root}/.sneaker-complete\"
     rm -f ${remote_tmp}/server.tar.gz" \
     || die "could not unpack the server on ${dest}"
-  ok "server placed at ${root}"
+  ok "server placed at $(ve_display_path "$root")"
 
   cli=$(ve_cli_dest "$layout" "$commit")
   if [ -n "$cli" ]; then
@@ -532,7 +552,7 @@ ve_place_server() {
         chmod 0755 \"\$HOME/${cli#\$HOME/}\"
         rm -rf ${remote_tmp}/cli ${remote_tmp}/cli.tar.gz" \
         || die "could not place the CLI on ${dest}"
-      ok "cli placed at ${cli}"
+      ok "cli placed at $(ve_display_path "$cli")"
     else
       warn "no CLI build staged for ${platform} ${commit:0:12}"
     fi
@@ -543,12 +563,14 @@ ve_place_server() {
 ve_install_remote_extensions() {
   local dest=$1 layout=$2 commit=$3 platform=$4 alias=$5
   local root server_bin remote_tmp id version rel sha n=0
+  ve_require_commit "$commit" "extension install on ${alias}"
   root=$(ve_server_root "$layout" "$commit")
   server_bin="${root}/bin/code-server"
   remote_tmp="${VE_REMOTE_TMP}/$$"
 
   sn_ssh "$dest" "[ -x \"\$HOME/${server_bin#\$HOME/}\" ]" 2>/dev/null \
-    || die "no code-server at ${server_bin} on ${dest}; the server was not placed"
+    || die "no code-server at $(ve_display_path "$server_bin") on ${dest}; \
+the ${layout} server for ${commit:0:12} was not placed"
 
   while IFS=$'\t' read -r id version _plat rel sha _engine _eid _pid; do
     [ -n "$id" ] || continue
@@ -575,13 +597,14 @@ ve_install_remote_extensions() {
 }
 
 ve_install_host() {
-  local alias=$1 dest platform layout commit group
+  local alias=$1 dest platform layout commit staged_commit group
   dest=$(ve_host_dest "$alias")
   platform=$(ve_host_platform "$alias")
   hdr "$alias  (${dest}, ${platform})"
   ssh_master "$dest"
   commit=$(ve_py summary "${VE_STAGE_DIR}/current/MANIFEST.json" \
            | awk -F'\t' '$1=="vscode_commit"{print $2}')
+  ve_require_commit "$commit" "${alias}"
   ve_detect_layout "$dest" "$commit"
   layout=$VE_LAYOUT_DETECTED
   info "layout     ${layout}$( [ "$VE_LAYOUT" = auto ] && printf ' (detected)' )"
@@ -591,10 +614,14 @@ ve_install_host() {
   if [ -n "$group" ] && [ -n "${_VE_HOME_DONE[$group]:-}" ]; then
     info "home group ${group} already staged by ${_VE_HOME_DONE[$group]}; skipping server"
   else
-    while IFS=$'\t' read -r commit _version _role; do
-      [ -n "$commit" ] || continue
-      [ "$VE_DRY" = 1 ] && { info "would place server ${commit:0:12}"; continue; }
-      ve_place_server "$dest" "$layout" "$commit" "$platform"
+    # Distinct from $commit: the bundle may carry several server commits (the
+    # installed one and the hedge), while extensions install against the one
+    # VS Code is actually running. Reading into $commit here emptied it at
+    # EOF, and the install then looked for code-server under bin//bin.
+    while IFS=$'\t' read -r staged_commit _version _role; do
+      [ -n "$staged_commit" ] || continue
+      [ "$VE_DRY" = 1 ] && { info "would place server ${staged_commit:0:12}"; continue; }
+      ve_place_server "$dest" "$layout" "$staged_commit" "$platform"
     done < <(ve_py commits "${VE_STAGE_DIR}/current/MANIFEST.json" "$platform")
     [ -n "$group" ] && _VE_HOME_DONE[$group]=$alias
   fi
