@@ -109,22 +109,49 @@ ve_host_list() {
   for h in "${!HOST_ALIAS[@]}"; do printf '%s\n' "$h"; done | sort
 }
 
+# These print one value per line. Callers consume them bare, in a loop, or
+# through $( ) which strips the trailing newline - so the newline is always
+# correct and its absence silently concatenates. Not hypothetical: it turned
+# three hosts into one token, "linux-x64linux-x64linux-arm64".
 ve_host_dest() {  # alias -> ssh destination
   local alias=$1
-  if [ -n "${HOST_ALIAS[$alias]:-}" ]; then printf '%s' "${HOST_ALIAS[$alias]}"
-  else printf '%s' "$alias"; fi
+  if [ -n "${HOST_ALIAS[$alias]:-}" ]; then printf '%s\n' "${HOST_ALIAS[$alias]}"
+  else printf '%s\n' "$alias"; fi
 }
 
 ve_host_platform() {
   local alias=$1
   [ -n "${HOST_PLATFORM[$alias]:-}" ] || die \
     "no platform recorded for ${alias}. Run: sneaker vscode-extensions probe --host ${alias}"
-  printf '%s' "${HOST_PLATFORM[$alias]}"
+  printf '%s\n' "${HOST_PLATFORM[$alias]}"
+}
+
+# Platforms the Marketplace and update service publish. The bastion fetcher
+# checks this too, but only after the bundle has been pushed and a password
+# typed; checking here fails on a typo before any of that.
+VE_KNOWN_PLATFORMS="win32-x64 win32-arm64 linux-x64 linux-arm64 linux-armhf \
+alpine-x64 alpine-arm64 darwin-x64 darwin-arm64"
+
+ve_check_platform() {  # platform source-description
+  case " ${VE_KNOWN_PLATFORMS} " in
+    *" $1 "*) return 0 ;;
+  esac
+  die "$2 is not a VS Code platform: '$1'. Known: ${VE_KNOWN_PLATFORMS}"
 }
 
 ve_platform_union() {
-  local h; for h in $(ve_host_list); do ve_host_platform "$h"; done
-  local p; for p in ${EXTRA_PLATFORMS[@]+"${EXTRA_PLATFORMS[@]}"}; do printf '%s\n' "$p"; done
+  local h p
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    p=$(ve_host_platform "$h") || exit 1
+    ve_check_platform "$p" "HOST_PLATFORM[${h}]"
+    printf '%s\n' "$p"
+  done < <(ve_host_list)
+  for p in ${EXTRA_PLATFORMS[@]+"${EXTRA_PLATFORMS[@]}"}; do
+    [ -n "$p" ] || continue
+    ve_check_platform "$p" "EXTRA_PLATFORMS"
+    printf '%s\n' "$p"
+  done
 }
 
 # ------------------------------------------------------------ local VS Code
@@ -369,7 +396,8 @@ ve_staged_or_die() {
 
 ve_probe() {
   local alias dest out arch libc glibc layout commits selfinstall
-  for alias in $(ve_host_list); do
+  while IFS= read -r alias; do
+    [ -n "$alias" ] || continue
     dest=$(ve_host_dest "$alias")
     hdr "$alias  (${dest})"
     ssh_master "$dest"
@@ -430,7 +458,7 @@ ve_probe() {
     if [ "$plat" = linux-armhf ]; then
       err "no VS Code Server is published for armhf; this host cannot run Remote-SSH"
     fi
-  done
+  done < <(ve_host_list)
 }
 
 # -------------------------------------------------------------------- install
@@ -642,7 +670,9 @@ ve_install() {
   fi
   ve_install_local
   local alias
-  for alias in $(ve_host_list); do ve_install_host "$alias"; done
+  while IFS= read -r alias; do
+    [ -n "$alias" ] && ve_install_host "$alias"
+  done < <(ve_host_list)
 }
 
 ve_status() {
@@ -658,7 +688,8 @@ ve_status() {
     | awk 'NF{print $1}' | sed -e 's/@.*//' | tr 'A-Z' 'a-z')
 
   local alias dest line kind value
-  for alias in $(ve_host_list); do
+  while IFS= read -r alias; do
+    [ -n "$alias" ] || continue
     dest=$(ve_host_dest "$alias")
     hdr "$alias  (${dest})"
     ssh_master "$dest"
@@ -691,7 +722,7 @@ ve_status() {
       ls -1 "$d/extensions" 2>/dev/null | grep -v "^\." | grep -v "^extensions.json$" \
         | sed -E "s/-[0-9]+\.[0-9]+\.[0-9]+.*$//" | sort -u \
         | while read -r e; do printf "ext\t%s\n" "$e"; done' 2>/dev/null | tr -d '\r')
-  done
+  done < <(ve_host_list)
 }
 
 ve_sync() { ve_fetch; ve_stage; ve_install; }
@@ -711,7 +742,8 @@ ve_sync() { ve_fetch; ve_stage; ve_install; }
 
 ve_clean() {
   local alias dest reply
-  for alias in $(ve_host_list); do
+  while IFS= read -r alias; do
+    [ -n "$alias" ] || continue
     dest=$(ve_host_dest "$alias")
     hdr "$alias  (${dest})"
     if [ "$VE_ALL" = 1 ]; then
@@ -737,7 +769,7 @@ ve_clean() {
         || die "could not remove server trees on ${dest}"
       ok "removed all server trees and the CLI on ${alias}; extensions kept"
     fi
-  done
+  done < <(ve_host_list)
 }
 
 ve_search() {
