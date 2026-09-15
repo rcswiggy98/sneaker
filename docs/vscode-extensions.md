@@ -78,7 +78,12 @@ Four rules, each of which exists because violating it is silent:
    distinguished. Opt in per line with `@pre`, never globally.
 3. **Walk `ExtensionPack` as well as `ExtensionDependencies`.** Remote-SSH's
    requirement is expressed entirely through the pack; its dependency field is
-   empty. Walking only dependencies finds nothing.
+   empty. Walking only dependencies finds nothing. Dependencies on the
+   publisher `vscode` are the exception: those are VS Code's own bundled
+   extensions, they are not on the Marketplace, and nothing can stage them.
+   `ms-vscode.powershell` declares `vscode.powershell` and installs happily
+   without it. They are reported and skipped; demanding one be listed is a
+   dead end, since adding the line only fails differently next run.
 4. **Never fall back across architectures.** Exact `targetPlatform`, then a
    universal build if the publisher ships one, then a hard error naming the
    extension and the platform. Extensions wrapping native binaries frequently
